@@ -107,6 +107,17 @@ The transport is `apps/photocraft/src/control_server.rs`, and the handlers are i
 - `app.open {path}` / `app.save {path?, tgaBits?, ddsCompression?, ddsMipmaps?, quality?, jpegFormat?}` (JPEG: `quality` on the 0–12 scale, `jpegFormat` `baseline`, `optimized` or `progressive`; automation never shows JPEG Options): relative file I/O through the configured automation roots (`app.open` reads under the read root, `app.save` writes under the write root; absolute paths, `..` and paths escaping the root are refused, and both fail closed when no root was granted). Both reply with `warnings` (import/export notes such as "adjustment layer flattened"; `[]` when none), also shown to the user in the status bar and as a notice (`notices` in `ui.inspect`); `app.open` also returns the `path` and document `name` (directory `.pcraft` — the native on-disk form — loads through the read root's capability; the single-file (zip) form takes the bytes path), `app.save` the `path` written. `app.save` without `path` writes back only to the document's own PSD, PSB or `.pcraft` file, like File › Save. `tgaBits` (24 or 32) sets a TGA's bits per pixel: 32 writes the alpha channel (or else the transparency) as its alpha, 24 none; without it, 32 with an alpha channel or transparency, else 24. `ddsCompression` (`none`, `bc1`, `bc2` or `bc3`) and `ddsMipmaps` (bool) set a DDS texture's compression and mip chain; without them, uncompressed without mipmaps. Automation saves never show TGA, DDS, JPEG or TIFF options. Automation opens and saves never fire script events. Use these two rather than `file.open`, `file.save`, `file.saveAs` or `file.saveACopy`, which the control channel refuses (see [Engine commands](#engine-commands))
 - `app.quit`
 
+**PDF opening:** `app.open`, workspace `doc.open`, and MCP `doc_open` also accept a `pdf` object:
+`{"path":"label.pdf","pdf":{"mode":"auto","page":1,"dpi":300,"box":"crop"}}`.
+`mode` is `auto` (prefer preserved Photoshop layers, rasterize only when absent),
+`layers` (require Photoshop editing data), or `render` (explicitly rasterize).
+`page` is one-based; `dpi` is 1–2400; `box` is `crop` or `media`. Resolution and box
+affect rasterization only; Photoshop layers keep their stored size, depth and resolution.
+Corrupt editing data fails in Auto/Layers mode instead of silently flattening.
+PDF imports have no source Save path: pass a new layered output path to `app.save`.
+The native File › Open dialog exposes the same options. Confirming an ambient-path dialog
+through automation remains forbidden; use `app.open` under the configured read root instead.
+
 ## Engine commands
 
 Change the UI language without restarting with `prefs.set`:
@@ -346,7 +357,7 @@ How each MCP tool maps onto control methods in bridge mode:
 | `command_list {filter?, enabled_only?}` | `engine.commands` (filtered by the MCP server; replies with the same bare array, rows keep `disabledReason` and `needsDocument`, see [Command list replies](#command-list-replies)) |
 | `doc_new {…}` | `engine.execute {command: "file.new", params}` |
 | `doc_inspect` | `engine.execute {command: "document.inspect"}` |
-| `doc_open {path}` | `app.open {path}` |
+| `doc_open {path, pdf?}` | `app.open {path, pdf?}` |
 | `doc_place {path, …}` | `engine.execute {command: "file.placeEmbedded", params}` |
 | `doc_replace_smart_object {path, layer?, …}` | `engine.execute {command: "layer.smartObjects.replaceContents", params}`, which the desktop refuses (the command reads an ambient path, and no control method reads it through the automation root yet; `doc_place` is refused the same way). An `index` is refused in bridge mode instead of being dropped, since the command runs on the app's active document. Use it headless or in the workspace server (`doc.replaceSmartObject`), where `path` resolves beneath the read root |
 | `doc_export_layers {dir, …}` | `engine.execute {command: "file.export.layersToFiles", params}` |
@@ -412,7 +423,7 @@ stdio, and a value that is not a port is a usage error naming the variable. Impl
 | `jobs.list` / `jobs.cancel` | `{}` / `{job?}`: background jobs; cancel one or all. Every request (and MCP tool call) first applies the jobs that finished, so `doc.save`, `doc.inspect`, `doc.render` and `session.list` include a finished job's result without polling `jobs.list` first |
 | `engine.commands` | `{filter?}`: registry with params docs and enablement (`enabled`, `disabledReason`, `needsDocument`); `result` is a bare array of command objects ([Command list replies](#command-list-replies)) |
 | `session.list` | open documents and the active index |
-| `doc.open` / `doc.new` | `{path}` / `file.new` params |
+| `doc.open` / `doc.new` | `{path, pdf?}` (PDF options above) / `file.new` params |
 | `doc.place` | `{path, scale? (percent), fit? (true), center? ([x, y]), index?}`: places a file as a Smart Object layer above the active one and returns `{layer, scale, bounds}`. `path` resolves beneath the read root, so this is the capability-scoped `file.placeEmbedded` — that command itself still refuses an ambient path |
 | `doc.replaceSmartObject` | `{path, layer? (id or name; default the active layer), index?}` → the command's `{layer, instances}`: replaces a Smart Object's contents (one history step, transform and filters kept). `path` resolves beneath the read root, so this is the capability-scoped `layer.smartObjects.replaceContents`, which itself still refuses an ambient path (#8061) |
 | `doc.exportLayers` | `{dir, format? (png), prefix?, visibleOnly? (true), quality?, index?}` → `{files, skipped}` (plus `count` for workspace exports): one file per exported top-level layer, named like `file.export.layersToFiles` names them. `count` is present only for workspace exports and counts written files only. `skipped` is always an array (empty when nothing is omitted), in top-to-bottom order, of `{layer, name, reason}`: the session layer id, original unsanitized name, and `"hidden by visibleOnly"` or `"adjustment layer has no pixels of its own"`. Visibility takes precedence for hidden adjustments; `visibleOnly:false` exports hidden non-adjustment layers. Groups export merged; their children are not separate exports or skips. Existing filenames/numbering are unchanged. `dir` resolves beneath the write root, so the ambient command stays refused. The bytes come from the command's own core, so both paths write the same files; the write capability refuses to overwrite an existing file. Encode/write failures are errors, not skips |

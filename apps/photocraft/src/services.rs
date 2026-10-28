@@ -21,7 +21,7 @@ const OPEN_EXTS: &[&str] = &[
     "pcraft", "pdn", "ora", "xcf", "xcfgz", "gz", "kra", "krz", "psd", "psb", "psdt", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "dib", "tga",
     "ico", "qoi", "exr", "hdr", "pbm", "pgm", "ppm", "pnm", "pam", "pfm", "pcx", "dds", "xpm", "fits", "fit", "fts", "dpx", "cin", "dcm", "dicom", "dc3",
     "iff", "lbm", "ilbm", "heic", "heif", "hif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf", "abr", "grd", "asl", "svg", "svgz",
-    "aco", "act", "ase", "kys", "af", "afdesign", "afphoto", "afpub",
+    "aco", "act", "ase", "kys", "af", "afdesign", "afphoto", "afpub", "pdf",
 ];
 const SVG_EXTS: &[&str] = &["svg", "svgz"];
 
@@ -42,6 +42,7 @@ fn open_filter_extensions(extensions: &[&str]) -> Vec<String> {
 const OPEN_FILTERS: &[(&str, &[&str])] = &[
     ("PhotoCraft", &["pcraft"]),
     ("Photoshop", &["psd", "psb", "psdt"]),
+    ("PDF", &["pdf"]),
     ("Affinity", &["af", "afdesign", "afphoto", "afpub"]),
     ("Krita", &["kra", "krz"]),
     ("GIMP", &["xcf", "xcfgz", "gz"]),

@@ -67,6 +67,7 @@
     <mediatype>application/x-krita</mediatype>
     <mediatype>image/vnd.adobe.photoshop</mediatype>
     <mediatype>image/x-psb</mediatype>
+    <mediatype>application/pdf</mediatype>
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>

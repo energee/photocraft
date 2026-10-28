@@ -199,11 +199,24 @@ pub fn run(app: &mut PhotocraftApp, id: &str, params: Value) -> Result<Value, St
 /// Open a file in the background: a tab appears at once and shows the progress; the document
 /// replaces it when decoded. `path` is remembered for File › Save and Open Recent.
 pub fn start_open(app: &mut PhotocraftApp, name: &str, path: Option<String>, source: OpenSource) -> Result<(), String> {
+    let options = photocraft_engine::jobs::import_options(app.session.prefs());
+    start_open_with_options(app, name, path, source, options)
+}
+
+/// [`start_open`] with explicit import options selected by the user.
+pub fn start_open_with_options(
+    app: &mut PhotocraftApp,
+    name: &str,
+    path: Option<String>,
+    source: OpenSource,
+    options: photocraft_io::ImportOptions,
+) -> Result<(), String> {
     let name = &app.open_name(name);
-    match app.session.start_open_for_user(name, source).map_err(|e| e.to_string())? {
-        // Inline (wasm): finish now, like a background open that ended at once.
+    app.jobs.last_started = None;
+    match app.session.start_open_for_user_with_options(name, source, options).map_err(|e| e.to_string())? {
         Started::Done(v) => finish_open(app, name, path.as_deref(), &v, None),
         Started::Job(job) => {
+            app.jobs.last_started = Some(job);
             app.jobs.opens.push(OpenTab { job, name: name.to_string(), path, slot: None, order: None });
             app.jobs.focus = Some(job);
             app.ui.chrome.home = None;

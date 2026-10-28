@@ -74,7 +74,7 @@ pub(super) fn openable_name(path: &str) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 const OPENABLE: &[&str] = &[
     "pdn", "ora", "xcf", "xcfgz", "kra", "krz", "psd", "psb", "psdt", "pcraft", "svg", "svgz", "af", "afdesign", "afphoto", "afpub", "dng", "cr2", "nef",
-    "nrw", "arw", "pef",
+    "nrw", "arw", "pef", "pdf",
 ];
 
 pub(crate) fn file_name(path: &str) -> String {

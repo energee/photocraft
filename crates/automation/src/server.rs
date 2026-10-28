@@ -50,6 +50,9 @@ pub struct DocIndex {
 pub struct OpenParams {
     /// Path beneath the configured automation read root: relative (forward slashes) or absolute.
     pub path: String,
+    /// PDF options: mode auto|layers|render, one-based page, dpi 1..2400, box crop|media.
+    #[serde(default)]
+    pub pdf: Option<Value>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -629,13 +632,28 @@ impl PhotocraftMcp {
     #[tool(description = "Open an image or document file and make it active. Returns index, size and import warnings.")]
     async fn doc_open(&self, Parameters(p): Parameters<OpenParams>) -> Result<CallToolResult, McpError> {
         let path = PathBuf::from(&p.path);
-        if let Some(r) = self.headless_op(move |h| h.open(&path)).await {
+        let mut params = json!({"path": p.path});
+        if let Some(pdf) = p.pdf {
+            params["pdf"] = pdf;
+        }
+        let options = match photocraft_engine::jobs::pdf_import_options(photocraft_io::ImportOptions::default(), &params) {
+            Ok(options) => options,
+            Err(error) => return Ok(fail(error.to_string())),
+        };
+        if let Some(r) = self
+            .headless_op(move |h| {
+                let mut resolved = photocraft_engine::jobs::import_options(h.session.prefs());
+                resolved.pdf = options.pdf;
+                h.open_with_options(&path, &resolved)
+            })
+            .await
+        {
             return to_result(r);
         }
         let Some(b) = self.bridge_client() else {
             return Ok(no_backend());
         };
-        to_result(b.call("app.open", json!({"path": p.path})).await)
+        to_result(b.call("app.open", params).await)
     }
 
     #[tool(

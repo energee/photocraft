@@ -514,7 +514,49 @@ pub fn import_options(prefs: &crate::prefs::Preferences) -> photocraft_io::Impor
     photocraft_io::ImportOptions {
         max_group_depth: prefs.file_handling.rasterize_svg_groups_deeper_than as usize,
         demosaic: prefs.raw_defaults.demosaic.method(),
+        ..Default::default()
     }
+}
+
+/// Apply an explicit `pdf` import object to the normal preference-derived settings.
+/// Page numbers are one-based; rendering is opt-in for a Photoshop PDF with editing data.
+pub fn pdf_import_options(mut opts: photocraft_io::ImportOptions, params: &Value) -> Result<photocraft_io::ImportOptions> {
+    use photocraft_io::{PdfBox, PdfImportMode};
+    let Some(value) = params.get("pdf") else { return Ok(opts) };
+    let bad = |msg: &str| EngineError::BadParams { cmd: "file.openAs".into(), msg: msg.into() };
+    let fields = value.as_object().ok_or_else(|| bad("pdf must be an object"))?;
+    for (key, value) in fields {
+        match key.as_str() {
+            "mode" => {
+                opts.pdf.mode = match value.as_str() {
+                    Some("auto") => PdfImportMode::Auto,
+                    Some("layers") => PdfImportMode::Layers,
+                    Some("render") => PdfImportMode::Render,
+                    _ => return Err(bad("pdf.mode must be auto, layers or render")),
+                };
+            }
+            "page" => {
+                opts.pdf.page = value
+                    .as_u64()
+                    .and_then(|p| u32::try_from(p).ok())
+                    .filter(|p| *p > 0)
+                    .ok_or_else(|| bad("pdf.page must be a positive one-based page number"))?;
+            }
+            "dpi" => {
+                opts.pdf.dpi =
+                    value.as_f64().filter(|v| v.is_finite() && (1.0..=2400.0).contains(v)).ok_or_else(|| bad("pdf.dpi must be between 1 and 2400"))?;
+            }
+            "box" => {
+                opts.pdf.crop_box = match value.as_str() {
+                    Some("crop") => PdfBox::Crop,
+                    Some("media") => PdfBox::Media,
+                    _ => return Err(bad("pdf.box must be crop or media")),
+                };
+            }
+            _ => return Err(bad(&format!("unknown PDF import option {key}"))),
+        }
+    }
+    Ok(opts)
 }
 
 impl Session {
@@ -542,23 +584,27 @@ impl Session {
     /// result is `{held, name, warnings, color}` (`color` the question): take it with
     /// [`Session::take_held_open`] once answered.
     pub fn start_open(&mut self, name: &str, source: OpenSource) -> Result<Started> {
-        self.start_open_inner(name, source, false)
+        self.start_open_inner(name, source, false, import_options(self.prefs()))
     }
 
     /// Interactive opening: hold a damaged PSD until the user answers a damage
     /// confirmation, without changing import or subsequent save behaviour.
     /// Headless callers keep using [`Self::start_open`].
     pub fn start_open_for_user(&mut self, name: &str, source: OpenSource) -> Result<Started> {
-        self.start_open_inner(name, source, true)
+        self.start_open_for_user_with_options(name, source, import_options(self.prefs()))
+    }
+
+    /// Interactive open with explicit import settings, including PDF page rendering.
+    pub fn start_open_for_user_with_options(&mut self, name: &str, source: OpenSource, opts: photocraft_io::ImportOptions) -> Result<Started> {
+        self.start_open_inner(name, source, true, opts)
     }
 
     /// Decodes a file in a job and optionally holds damaged PSD content for
     /// interactive confirmation while leaving headless opens non-interactive.
-    fn start_open_inner(&mut self, name: &str, source: OpenSource, confirm_damage: bool) -> Result<Started> {
+    fn start_open_inner(&mut self, name: &str, source: OpenSource, confirm_damage: bool, opts: photocraft_io::ImportOptions) -> Result<Started> {
         let label = format!("Opening {name}");
         let name_w = name.to_string();
         let name_a = name.to_string();
-        let opts = import_options(self.prefs());
         self.start_job(
             OPEN_JOB,
             json!({"name": name}),

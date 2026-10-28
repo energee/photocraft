@@ -178,6 +178,7 @@ impl PhotocraftApp {
             updates_rt: Default::default(),
             discard: None,
             file_dialog: None,
+            pdf_import: Vec::new(),
             tiff_options: None,
             save_dirs: HashMap::new(),
             disk_stamps: HashMap::new(),

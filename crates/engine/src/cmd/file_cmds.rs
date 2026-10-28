@@ -39,7 +39,7 @@ use info::file_info;
 pub use info::{CAMERA_FIELDS, camera_data, read_file_info, write_file_info};
 #[cfg(test)]
 use info::{exposure_text, find_element};
-pub use open::{PLACE_EMBEDDED, open_bytes_as, place_bytes, raw_defaults};
+pub use open::{PLACE_EMBEDDED, open_bytes_as, open_bytes_as_with_options, place_bytes, raw_defaults};
 use open::{close_all, close_others, open_as, place, revert};
 pub(crate) use open::{import, tag_exr_colorspace};
 use paths::is_file;
@@ -250,7 +250,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Open As…",
             &["File"],
             Some("Cmd+Alt+Shift+O"),
-            r##"{"path":str,"as":"psd|png|jpg|tiff|…"? (decode as this format)}"##,
+            r##"{"path":str,"as":"psd|png|jpg|tiff|pdf|…"? (decode as this format),"pdf":{"mode":"auto|layers|render"="auto","page":u32=1,"dpi":1..2400=300,"box":"crop|media"="crop"}?}"##,
             native,
             open_as
         ),
@@ -259,7 +259,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place Embedded…",
             &["File"],
             None,
-            r##"{"path":str,"scale":%? (default: fit when larger than the canvas),"fit":bool? (default: Preferences > General > Resize Image During Place),"smartObject":bool? (default: Preferences > General > Always Create Smart Objects When Placing),"center":[x,y]?}"##,
+            r##"{"path":str,"scale":%? (default: fit when larger than the canvas),"fit":bool? (default: Preferences > General > Resize Image During Place),"smartObject":bool? (default: Preferences > General > Always Create Smart Objects When Placing),"center":[x,y]?,"pdf":{"mode":"auto|layers|render","page":u32,"dpi":1..2400,"box":"crop|media"}?}"##,
             native_doc,
             |s, p| place(s, p, false)
         ),
@@ -268,7 +268,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place Linked…",
             &["File"],
             None,
-            r##"{"path":str,"scale":%?,"fit":bool? (default: Preferences > General > Resize Image During Place),"center":[x,y]?}"##,
+            r##"{"path":str,"scale":%?,"fit":bool? (default: Preferences > General > Resize Image During Place),"center":[x,y]?,"pdf":{"mode":"auto|layers|render","page":u32,"dpi":1..2400,"box":"crop|media"}?}"##,
             native_doc,
             |s, p| place(s, p, true)
         ),
@@ -371,6 +371,10 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 #[path = "file_cmds/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "file_cmds/pdf_tests.rs"]
+mod pdf_tests;
 
 #[cfg(test)]
 mod aces_exr_tests {

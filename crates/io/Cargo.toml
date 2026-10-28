@@ -34,6 +34,8 @@ photocraft-format = { path = "../format" }
 craft-docpath = { workspace = true }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
+lopdf = { workspace = true }
+hayro = { workspace = true }
 blake3 = { version = "1.8", default-features = false, features = ["pure"] }
 # svg.rs inflates `.svgz` itself (with a size cap) so the XML can be checked before it is parsed;
 # pdn.rs inflates Paint.NET's gzip pixel chunks.
@@ -46,6 +48,8 @@ roxmltree = "0.21"
 resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "raster-images"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# lopdf's encryption code uses getrandom even when opening an unencrypted PDF.
+lopdf = { workspace = true, features = ["wasm_js"] }
 resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }
 
 [dev-dependencies]

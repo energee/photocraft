@@ -88,6 +88,12 @@ pub fn display_name(path: &str) -> String {
     std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| path.to_string())
 }
 
+/// Whether `path` names a PDF, including web drops whose contents do not carry a useful extension.
+pub(crate) fn is_pdf_name(path: &str, bytes: &[u8]) -> bool {
+    bytes.starts_with(b"%PDF-")
+        || (std::path::Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf")) && photocraft_codecs::detect(bytes).is_none())
+}
+
 impl PhotocraftApp {
     /// Open `bytes` read from the file at `path`: the document is named after the file, keeps
     /// `path` for File › Save unless it is a derivative preview, and `path` goes to the top of Open Recent. Returns the import
@@ -96,6 +102,9 @@ impl PhotocraftApp {
         // Brushes/gradients go to the preset libraries (no document, no Open Recent entry).
         if let Some(r) = crate::preset_files_ui::open(self, path, bytes) {
             return r.map(|()| Vec::new());
+        }
+        if is_pdf_name(path, bytes) {
+            return self.open_bytes_from(&display_name(path), bytes, Some(path));
         }
         if self.background_jobs {
             // The path and Open Recent are recorded when the background open finishes.
@@ -137,6 +146,17 @@ impl PhotocraftApp {
         // Documents opening in the background are read on the worker too (a 2 GB PSB read
         // would block the window). Preset files (brushes, gradients) go the usual way.
         let ext = std::path::Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        if ext == "pdf" {
+            crate::pdf_import::open(
+                self,
+                crate::pdf_import::Pending {
+                    name: display_name(path),
+                    path: Some(path.to_string()),
+                    source: crate::pdf_import::Source::Path(path.to_string()),
+                },
+            );
+            return Ok(Vec::new());
+        }
         if self.background_jobs && !crate::preset_files_ui::PRESET_EXTS.contains(&ext.as_str()) {
             crate::jobs_ui::start_open(self, &display_name(path), Some(path.to_string()), photocraft_engine::jobs::OpenSource::Path(path.to_string()))?;
             return Ok(Vec::new());

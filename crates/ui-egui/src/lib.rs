@@ -144,6 +144,7 @@ pub use dialogs::new_layer_ui;
 pub use dialogs::open_prompt;
 pub use dialogs::palette;
 pub(crate) use dialogs::pattern_fill_ui;
+pub use dialogs::pdf_import;
 pub use dialogs::rasterize_prompt;
 pub use dialogs::replace_prompt;
 use dialogs::rgb_histogram;
@@ -625,6 +626,8 @@ pub struct PhotocraftApp {
     pub(crate) discard: Option<discard_ui::Prompt>,
     /// The Open or Save dialog in progress, and the action waiting on it (see `file_dialog`).
     pub(crate) file_dialog: Option<file_dialog::Pending>,
+    /// PDFs waiting for their own import-options dialogs.
+    pub(crate) pdf_import: Vec<(u64, pdf_import::Pending)>,
     /// A Save As to a layered TIFF parked behind the TIFF Options prompt (see `tiff_options_ui`).
     pub(crate) tiff_options: Option<tiff_options_ui::Prompt>,
     /// Where each document was last saved or exported to through a dialog (#1826): its next Save

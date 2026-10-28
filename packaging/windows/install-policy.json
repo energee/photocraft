@@ -44,6 +44,12 @@
     ],
     [
       "-1",
+      "Software\\Classes\\.pdf\\OpenWithProgids",
+      "Photocraft.Image",
+      ""
+    ],
+    [
+      "-1",
       "Software\\Classes\\.pdn\\OpenWithProgids",
       "Photocraft.Image",
       ""
@@ -178,6 +184,12 @@
       "-1",
       "Software\\Classes\\Applications\\photocraft.exe\\SupportedTypes",
       ".psb",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\photocraft.exe\\SupportedTypes",
+      ".pdf",
       ""
     ],
     [

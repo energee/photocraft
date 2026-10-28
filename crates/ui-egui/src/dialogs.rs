@@ -296,6 +296,7 @@ fn command_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, d: &Dialog, fields: 
         _ if crate::stack_dialog::owns(fields) => crate::stack_dialog::body(app, ui, fields, d.id),
         _ if crate::tool_reset::owns(fields) => crate::tool_reset::body(ui),
         _ if crate::crop_presets::owns(fields) => crate::crop_presets::body(app, ui, fields),
+        _ if crate::pdf_import::owns(fields) => crate::pdf_import::body(ui, fields),
         _ if crate::variables_ui::owns(fields) => crate::variables_ui::body(app, ui, fields),
         _ => return command_body_more(app, ui, d, fields, id),
     }
@@ -828,6 +829,7 @@ const ROUTES: &[fn(&Fields) -> bool] = &[
     crate::color_range_ui::owns,
     crate::prefs_ui::owns,
     crate::open_prompt::owns,
+    crate::pdf_import::owns,
     crate::replace_prompt::owns,
     crate::layer_style::color_picker::owns,
     |f| f.contains_key("__export"),
@@ -849,6 +851,8 @@ pub fn is_route_marker(key: &str) -> bool {
 fn file_command(fields: &Fields) -> Option<&'static str> {
     if crate::disk_change_prompt::owns(fields) {
         Some("file.save")
+    } else if crate::pdf_import::owns(fields) {
+        Some("file.openAs")
     } else if fields.contains_key("__export") {
         Some("file.export.exportAs")
     } else if fields.contains_key("__web") {
@@ -976,6 +980,7 @@ fn confirm_command(app: &mut PhotocraftApp, d: Dialog) -> Result<Value, String> 
         _ if crate::stack_dialog::owns(&d.fields) => crate::stack_dialog::confirm(app, &d.fields),
         _ if crate::tool_reset::owns(&d.fields) => crate::tool_reset::confirm(app),
         _ if crate::crop_presets::owns(&d.fields) => crate::crop_presets::confirm(app, &d.fields),
+        _ if crate::pdf_import::owns(&d.fields) => crate::pdf_import::confirm(app, &d.fields),
         _ if crate::variables_ui::owns(&d.fields) => crate::variables_ui::confirm(app, &d.fields),
         _ => confirm_command_more(app, d),
     }
@@ -1022,6 +1027,9 @@ pub fn cancel(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
     crate::actions::stopped(app, &closed.fields);
     if crate::guide_layout_ui::owns(&closed.fields) {
         app.ui.dialogs.retain(|child| child.fields.get("__dialog").and_then(Value::as_u64) != Some(id));
+    }
+    if crate::pdf_import::owns(&closed.fields) {
+        crate::pdf_import::cancel(app, &closed.fields);
     }
     // Cancel on a profile prompt opens neither its file nor the ones still to come.
     if crate::open_prompt::owns_damage(&closed.fields) {
@@ -1118,6 +1126,7 @@ pub mod new_layer_ui;
 pub mod open_prompt;
 pub mod palette;
 pub(crate) mod pattern_fill_ui;
+pub mod pdf_import;
 pub mod rasterize_prompt;
 pub mod replace_prompt;
 pub(super) mod rgb_histogram;

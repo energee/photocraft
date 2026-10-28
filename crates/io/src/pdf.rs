@@ -4,8 +4,8 @@
 //! through [`export`], and File › Print through [`print_pdf`] (called by the engine, which adds
 //! paper geometry, printer marks and labels around the image). One page holds a
 //! Flate-compressed image XObject, optional printer marks as vector operators and optional
-//! Helvetica text; an embedded ICC profile rides in an ICCBased colour space. Multi-page PDF,
-//! layer-preserving PDF and PDF import stay open (FILE-215-10).
+//! Helvetica text; an embedded ICC profile rides in an ICCBased colour space. Multi-page PDF
+//! and layer-preserving PDF output stay open (FILE-215-10). Import lives in `pdf_import`.
 
 use std::io::Write as _;
 

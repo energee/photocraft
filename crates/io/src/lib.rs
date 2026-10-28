@@ -25,6 +25,8 @@
 //! * Affinity documents (`.af`, `.afdesign`, `.afphoto`, `.afpub`) open natively
 //!   with no source save path, what isn't imported listed in the warnings; a file
 //!   whose native data can't be read opens as its embedded preview; see `affinity`.
+//! * PDF pages open from preserved Photoshop editing blocks through the PSD importer, or render
+//!   as opaque sRGB pages. PDF sources never become the document's Save path.
 //! * Every other format goes through `photocraft-codecs` as a single layer
 //!   (depth and Gray/RGB/CMYK model preserved): a locked "Background" when the
 //!   image is opaque, a normal "Layer 0" when it has transparency.
@@ -60,6 +62,9 @@ pub use ora::losses as ora_losses;
 pub mod pattern_map;
 mod pcraft_cache;
 pub mod pdf;
+mod pdf_import;
+mod pdf_render;
+pub use pdf_render::{PdfBox, PdfImportMode, PdfImportOptions};
 mod pdn;
 pub use pcraft_cache::PcraftExportCache;
 pub mod pixels;
@@ -126,6 +131,9 @@ pub enum IoError {
     /// An SVG that does not parse (or is too large to rasterise).
     #[error("SVG: {0}")]
     Svg(String),
+    /// A PDF or its preserved Photoshop editing data could not be imported.
+    #[error("PDF: {0}")]
+    Pdf(String),
     /// The file could not be read.
     #[error("{0}")]
     Read(String),
@@ -337,11 +345,13 @@ pub struct ImportOptions {
     pub max_group_depth: usize,
     /// The demosaic method camera raws are developed with.
     pub demosaic: raw::Demosaic,
+    /// PDF page rendering and preserved Photoshop editing data.
+    pub pdf: PdfImportOptions,
 }
 
 impl Default for ImportOptions {
     fn default() -> Self {
-        ImportOptions { max_group_depth: photocraft_doc::MAX_GROUP_DEPTH, demosaic: raw::Demosaic::default() }
+        ImportOptions { max_group_depth: photocraft_doc::MAX_GROUP_DEPTH, demosaic: raw::Demosaic::default(), pdf: PdfImportOptions::default() }
     }
 }
 
@@ -466,6 +476,9 @@ fn import_stages(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt, o
     if is_psd(bytes) {
         return import_psd(name, ctl, damaged, |want, recover| PsdFile::from_bytes_and_merged_recovering(bytes, want, recover));
     }
+    if pdf_import::is_pdf(bytes) {
+        return pdf_import::import(name, bytes, opts, ctl);
+    }
     if affinity::is_affinity(bytes) || affinity::has_extension(name) {
         return affinity::import(name, bytes);
     }
@@ -498,6 +511,9 @@ fn import_stages(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt, o
     // `codec: unrecognized image format` (#5258). Magic already returned above.
     if is_psd_input(name, bytes) {
         return import_psd(name, ctl, damaged, |want, recover| PsdFile::from_bytes_and_merged_recovering(bytes, want, recover));
+    }
+    if has_extension(name, "pdf") && photocraft_codecs::detect(bytes).is_none() {
+        return pdf_import::import(name, bytes, opts, ctl);
     }
     flat::import_flat(name, bytes)
 }

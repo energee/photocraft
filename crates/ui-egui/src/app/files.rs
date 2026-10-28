@@ -58,6 +58,17 @@ impl PhotocraftApp {
     /// [`Self::open_bytes`] for a file read from `path` (File › Save writes back there; it goes
     /// to Open Recent), when known.
     pub(crate) fn open_bytes_from(&mut self, name: &str, bytes: &[u8], path: Option<&str>) -> Result<Vec<String>, String> {
+        if crate::file_open::is_pdf_name(name, bytes) {
+            crate::pdf_import::open(
+                self,
+                crate::pdf_import::Pending {
+                    name: name.to_string(),
+                    path: path.map(str::to_string),
+                    source: crate::pdf_import::Source::Bytes(std::sync::Arc::new(bytes.to_vec())),
+                },
+            );
+            return Ok(Vec::new());
+        }
         if let Some(r) = preset_files_ui::open(self, name, bytes) {
             return r.map(|()| Vec::new());
         }
@@ -70,14 +81,14 @@ impl PhotocraftApp {
         }
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
         let opts = photocraft_engine::jobs::import_options(self.session.prefs());
-        let (mut doc, warnings, damaged) = if photocraft_io::is_psd(bytes) {
+        let (mut doc, warnings, damaged, source_read_only) = if photocraft_io::is_psd(bytes) {
             // Read PSD damage as structured information in the same decode, not by
             // retrying an error or matching the text of a compatibility warning.
             let (r, damaged) = photocraft_io::import_for_open(name, bytes, &opts).map_err(|e| e.to_string())?;
-            (r.document, r.warnings, damaged)
+            (r.document, r.warnings, damaged, r.source_read_only)
         } else {
             let (doc, warnings) = import(name, bytes, &opts)?;
-            (doc, warnings, false)
+            (doc, warnings, false, false)
         };
         // Preferences › Raw Defaults › Resolution, as the engine's open applies it.
         photocraft_engine::file_cmds::raw_defaults(&self.session, &warnings, &mut doc);
@@ -89,11 +100,12 @@ impl PhotocraftApp {
         let developed = warnings.iter().any(|w| w.contains(photocraft_io::raw::DEVELOPED_NOTE));
         let question = self.session.color.open_question(&doc).filter(|_| !developed);
         let wants_raw = camera_raw_ui::wants_open_dialog(self, &warnings);
+        let read_only = source_read_only || photocraft_io::affinity::is_affinity(bytes) || crate::file_open::is_pdf_name(name, bytes);
         open_prompt::arrive(
             self,
             open_prompt::Held {
                 doc,
-                read_only: photocraft_io::affinity::is_affinity(bytes),
+                read_only,
                 damage_pending: damaged,
                 name: name.to_string(),
                 path: path.map(str::to_string),
@@ -112,13 +124,18 @@ impl PhotocraftApp {
     /// Returns the import warnings (also shown to the user). Brush and gradient
     /// files go to the preset libraries, as for interactive opens.
     pub fn open_automation_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+        self.open_automation_bytes_with_options(name, bytes, &photocraft_engine::jobs::import_options(self.session.prefs()))
+    }
+
+    /// Automation import using explicit PDF options, without an interactive prompt.
+    pub fn open_automation_bytes_with_options(&mut self, name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<Vec<String>, String> {
         let events_enabled = self.session.prefs().script_events.enabled;
         if events_enabled {
             self.session.edit_prefs(|prefs| prefs.script_events.enabled = false);
         }
         let result = match preset_files_ui::open(self, name, bytes) {
             Some(r) => r.map(|()| Vec::new()),
-            None => self.import_automation_document(name, bytes),
+            None => self.import_automation_document(name, bytes, opts),
         };
         if events_enabled {
             self.session.edit_prefs(|prefs| prefs.script_events.enabled = true);
@@ -128,15 +145,14 @@ impl PhotocraftApp {
 
     /// The document half of [`open_automation_bytes`](Self::open_automation_bytes): no script
     /// events and no Color Settings policy (which may read user-configured profile paths).
-    fn import_automation_document(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+    fn import_automation_document(&mut self, name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<Vec<String>, String> {
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
-        let opts = photocraft_engine::jobs::import_options(self.session.prefs());
-        let (mut doc, warnings) = import(name, bytes, &opts)?;
+        let (mut doc, warnings) = import(name, bytes, opts)?;
         photocraft_engine::file_cmds::raw_defaults(&self.session, &warnings, &mut doc);
         // The caller records the path it read from.
         self.session.add_document(doc, None);
         if let Some(st) = self.session.active_mut() {
-            st.source_read_only = photocraft_io::affinity::is_affinity(bytes);
+            st.source_read_only = photocraft_io::affinity::is_affinity(bytes) || crate::file_open::is_pdf_name(name, bytes);
         }
         self.sync_views();
         self.ui.status = crate::i18n::fmt(tl!("Opened {name}"), &[("name", name)]);

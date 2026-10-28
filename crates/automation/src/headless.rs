@@ -90,14 +90,19 @@ impl Headless {
 
     /// Open a file and make it the active document.
     pub fn open(&mut self, path: &Path) -> Result<Value, AutomationError> {
+        self.open_with_options(path, &photocraft_engine::jobs::import_options(self.session.prefs()))
+    }
+
+    /// Capability-scoped Open with explicit PDF page and layer options.
+    pub fn open_with_options(&mut self, path: &Path, opts: &photocraft_io::ImportOptions) -> Result<Value, AutomationError> {
         let requested = path.to_str().ok_or_else(|| AutomationError::BadRequest("automation paths must be valid UTF-8".into()))?;
         let mut o = match &self.filesystem {
             Filesystem::Denied => return Err(AutomationError::BadRequest("automation filesystem access is not granted: read authority is absent".into())),
-            Filesystem::TrustedLocal => files::open(path)?,
+            Filesystem::TrustedLocal => files::open_with_options(path, opts)?,
             Filesystem::Workspace(workspace) => {
                 let bytes = workspace.read(requested)?;
                 let name = path.file_name().and_then(|name| name.to_str()).unwrap_or(requested);
-                files::open_bytes(name, &bytes)?
+                files::open_bytes_with_options(name, &bytes, opts)?
             }
         };
         // Preferences › Raw Defaults › Resolution, as the app's File › Open applies it.

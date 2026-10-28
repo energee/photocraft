@@ -104,7 +104,8 @@ impl Headless {
             "session.list" => Ok(self.session_list()),
             "doc.open" => {
                 let path = str_of(&p, "path").ok_or_else(|| bad("doc.open needs `path`"))?;
-                self.open(&PathBuf::from(path))
+                let options = photocraft_engine::jobs::pdf_import_options(photocraft_engine::jobs::import_options(self.session.prefs()), &p)?;
+                self.open_with_options(&PathBuf::from(path), &options)
             }
             "doc.place" => {
                 let path = str_of(&p, "path").ok_or_else(|| bad("doc.place needs `path`"))?;
