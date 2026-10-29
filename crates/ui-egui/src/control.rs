@@ -26,7 +26,7 @@
 //! - `ui.screenshot {path?, focus?}`: capture the main window (PNG). Raises the window first (default)
 //!   because occluded macOS windows stop rendering
 //! - `ui.focus`: bring the main window to the front
-//! - `app.open {path}` / `app.save {path}`: relative file I/O under the automation roots; reply with `warnings`
+//! - `app.open {path, layers?}` / `app.save {path}`: relative file I/O under the automation roots; `layers` selects PDF auto, layers, or render; reply with `warnings`
 //! - `app.quit`
 //! - `jobs.list` / `jobs.cancel {job?}`: background jobs (#210) with progress; cancel one (or all).
 //!   `engine.execute`, `ui.menu.invoke` and `ui.dialog.confirm` wait for a command that runs as a
@@ -1285,9 +1285,14 @@ fn dispatch(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) 
                     Some(read) => read(path),
                     None => Err("automation read authority is not configured".into()),
                 };
+                let mut opts = photocraft_engine::jobs::import_options(app.session.prefs());
+                opts.pdf = match photocraft_engine::file_cmds::pdf_options(p) {
+                    Ok(options) => options,
+                    Err(error) => return err(error.to_string()),
+                };
                 wrap(opened.and_then(|(name, bytes)| {
                     let name = app.open_name(&name);
-                    let warnings = app.open_automation_bytes(&name, &bytes)?;
+                    let warnings = app.open_automation_bytes_with(&name, &bytes, opts)?;
                     // Brushes/gradients go to the preset libraries: no document, no Open Recent entry.
                     if !crate::preset_files_ui::is_preset_file(&name) {
                         app.opened_from(path);
@@ -2843,7 +2848,7 @@ mod tests {
         let written = written.borrow();
         assert_eq!(written.len(), 1);
         assert_eq!(written[0].0, "out/template.pcraft");
-        let saved = photocraft_engine::smart_cmds::decode_source(&written[0].0, &written[0].1).unwrap();
+        let saved = photocraft_engine::smart_cmds::decode_source(&written[0].0, &written[0].1, None).unwrap();
         assert_eq!(photocraft_compose::flatten(&saved).px[0], [0.0, 0.0, 1.0, 1.0]);
     }
 

@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-21 · **Change:** minor (PDF read through Import PDF, #2541; earlier: DDS textures save: uncompressed or BC1–BC3, optional mip chain, DDS Options in Save As (#1327); PSD smart filters: 41 filters (27 more: Blur, Surface Blur, Smart Sharpen, Diffuse, Wind, Offset, Mezzotint and others) plus Hue/Saturation and Perspective Warp mapped both ways, #6296, #6298, #6300, #6302, #6304, #6314, #6316, #6267, #6268, FILE-215-2; large-file fixtures: a 20 MP layered PSD, a 150-layer layout, a 2 GB PSD and a 4.4 GB PSB generated at test time and round-tripped, FILE-216-2 done, #5107; earlier: PNG `sTER` stereo pairing kept on save, #6063; PDF write one flattened page via Save As / Save a Copy / CLI, #3401; CMYK Invert, Posterize and Threshold on the inks; smart filter masks on PSD open and save; Photoshop-oracle floor 188/258; lossy DNG, compression 34892, decodes with its levels and LinearizationTable applied to the stored 8-bit samples, FILE-215-11; CMYK Hue/Saturation and Color Balance keep the black ink; CMYK Posterize on the stored values, psd-tools oracle floor 242/309; CMYK adjustment layers composite on the document's inks; Photoshop-oracle floor 165/258; CMYK Brightness/Contrast on the inks, CMYK Threshold's luma; modern Brightness/Contrast's brightness curve; Photoshop-oracle floor 151/258; Lab documents composite on their stored L, a, b; Photoshop-oracle floor 152/258; Levels on whole levels at every step with Photoshop's shadow toe; Photoshop-oracle floor 146/258, psd-tools 238/309; 32-bit adjustments unclipped; Photoshop-oracle floor 149/258; mask feathers blur with their exact variance; Threshold splits on Photoshop's luminosity; a pass-through clipping base with an adjustment renders isolated; psd-tools oracle floor 240/309; 16-bit Posterize as Photoshop bins it; psd-tools oracle floor 241/309; Gradient Map luminosity; Photoshop-oracle floor 147/258; PSD: `Mt16`/`Mt32` merged transparency read; palette PNGs open in Indexed Color mode, #4804; earlier: CMYK Invert, Posterize and Threshold on the inks; 16-bit Lab Invert; Photoshop-oracle floor 145/258; `.atn` import maps 112 events; DDS textures open, #1327; DPX read and write, #1049; #2465 fixed: CS2 placed layers with only a `PlLd` block open their contents; Photoshop Actions `.atn` read and write; `.shc` contour files read and write; earlier the same day: indexed BMP palette mode; Save keeps a JPEG's quality and a WebP's encoding) · **Target:** Adobe Photoshop 2026
+> **Last reviewed:** 2026-10-29 · **Last updated:** 2026-10-29 · **Change:** minor (Photoshop-preserved PDF layers integrated with Import PDF; per-instance smart projections and read-only PDF sources) · **Target:** Adobe Photoshop 2026
 
 Every format Photoshop 2026 (27.11.0) reads or writes, with PhotoCraft's support, fidelity and
 tests. Photoshop's list comes from its `Info.plist` `CFBundleDocumentTypes`, the PiPL read/write
@@ -14,8 +14,8 @@ dispatch), `crates/psd`, `crates/raw`, `crates/heif`, `crates/affinity`. More de
 **Summary.** By count, 13 of Photoshop's 31 formats are fully supported in the directions Photoshop supports them, 4 partially (48%,
 measured). Weighted by use (PSD/PSB 40%, JPEG 15%, PNG 15%, TIFF 10%, camera raw 8%, WebP/AVIF/
 HEIF/JXL 6%, PDF 3%, everything else 3%), presence is ~80% and ready-for-real-work ~60%: PSD
-is broad but not yet reliable against Photoshop (gap G1), and Photoshop PDF, AVIF read and JPEG
-XL are missing (gap G10). Remaining: 300–500 h including PSD fidelity.
+is broad but not yet reliable against Photoshop (gap G1). PDF import is partial; advanced PDF
+output, AVIF read and JPEG XL remain gaps (G10). Remaining: 300–500 h including PSD fidelity.
 
 ## Photoshop's formats
 
@@ -38,7 +38,7 @@ XL are missing (gap G10). Remaining: 300–500 h including PSD fidelity.
 | Portable Bit Map (PBM/PGM/PPM/PNM/PFM/PAM) | R/W | yes | yes | 8/16/32f |
 | FITS | R/W (FITS Liberator plug-in) | yes | yes | 8/16/32f gray or RGB, header cards kept; no fpack, no debayer |
 | Targa | R/W | yes | yes | 8-bit |
-| Photoshop PDF | R/W | yes, rasterised through Import PDF as Photoshop's: Pages or Images, Crop To (Bounding Box, Media, Crop, Bleed, Trim, Art Box), resolution, mode, bit depth, anti-aliasing, Open In Reverse Order; a one-image PDF opens as the image; `page`/`resolution`/`crop`/`mode`/`depth` on `file.openAs` and the CLI (#2541) | yes, one flattened page (Save As / Save a Copy / CLI, #3401; also print and artboards-to-PDF) | No vector/text PDF, no multi-page save, no PDF presentation, layers are not preserved (FILE-215-10); read rasterises (hayro): DeviceGray reads linearly where Photoshop uses Dot Gain 20 %, Media Box shows nothing outside the crop box |
+| Photoshop PDF | R/W | yes: Auto preserves Photoshop editing data when present; Layers requires it; Render uses Import PDF's existing Pages/Images, Crop To, resolution, mode, depth and anti-aliasing choices (#2541, #6990) | yes, one flattened page (Save As / Save a Copy / CLI, #3401; also print and artboards-to-PDF) | Preserved layers retain authored depth and ICC; damaged editing data requires explicit Render. All PDF sources are read-only, including extracted images. No general editable PDF-object import, layered PDF export, multi-page save or presentation (FILE-215-10). Existing renderer differences remain: linear DeviceGray and MediaBox clipping at CropBox |
 | Photoshop EPS, DCS 1.0/2.0, EPS TIFF/PICT preview | R/W | no | no | |
 | Generic EPS / AI | R (rasterize) | no | no | |
 | SVG | R (rasterize) | yes, as editable shape layers or a vector smart object | no | Better than Photoshop for editing; gradients approximated (FILE-215-9) |
@@ -138,10 +138,30 @@ remaining gaps in #1606 stay tracked with per-sample corpus ceilings.
 | Curves `.acv`, Levels `.alv`, other adjustment presets | R/W | not audited | |
 | C2PA Content Credentials | R/W | no | #1050 |
 
+## Photoshop PDF editing data
+
+`PieceInfo / AdobePhotoshop / Private / StandardImageFileData` contains Photoshop's TIFF-style
+tagged layer records, not a complete PSD. The importer supplies the composite header and image
+resources to the PSD reader, including an ICC profile stored only on CompositeImage.
+The same Hayro parser serves both preservation and rendering; bounded raw/Flate decoding handles
+private streams. A typed channel-decoding failure rejects the editable import instead of
+silently publishing incomplete layers. Auto falls back only when editing data is absent.
+
+Smart objects retain their page/image, layer choice, crop, resolution, colour mode, depth,
+anti-aliasing and explicit pixel size across native saves, cache regeneration, source updates
+and PSD export. Different projections of shared PDF bytes use separate Edit Contents documents.
+Passwords remain transient; password-supplied embedded placement stores selected native contents,
+and linked placement is refused rather than saving a credential-dependent source.
+
+2026-10-29 runtime evidence: Rein.pdf opens at 4876×3076, CMYK/16 through this consolidated importer.
+The existing MediaBox clipping limitation is intentionally retained: the earlier workaround
+required an eager second parser and would weaken the bounded renderer architecture.
+
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | Photoshop-preserved PDF editing data, strict channel integrity, native/PSD smart projection persistence and PDF source protection consolidated onto #6990; renderer and existing limitations retained |
 | 2026-10-15 | minor | DDS textures save (#1327): uncompressed or BC1/BC2/BC3 (DXT1/3/5) from a clean-room block encoder, optional box-filtered mip chain, legacy header; DDS Options in Save As and Save a Copy, `ddsCompression`/`ddsMipmaps` for scripts, the CLI and MCP |
 | 2026-10-16 | minor | PSD smart filters: Perspective Warp (`perspectiveWarpTransform`: `vertices`, `warpedVertices`, `quads` of vertex indices, document pixels) opens as `layer.smartObjects.perspectiveWarp`, one plane per quad, and re-renders warped; save writes the original item with only the geometry rewritten, or a new one in Photoshop's layout; inconsistent descriptors stay verbatim (FILE-215-2, #6268) |
 | 2026-10-16 | minor | PSD smart filters: Hue/Saturation (`HStr`: `Clrz`, `Adjs` = master `Hst2` plus one per edited range with `LclR` and its four range sliders, all longs, measured on a Photoshop-saved file) opens as `image.adjustments.hueSaturation`, re-renders with the smart object and saves in Photoshop's layout; layouts outside it stay verbatim (FILE-215-2, #6267) |

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use photocraft_color::{ColorMode, SampleType};
-use photocraft_doc::{Document, Layer, LayerContent, LayerId, Size, SmartContentsId, SmartObject, SmartSource};
+use photocraft_doc::{Document, Layer, LayerContent, LayerId, PdfBox, PdfImportMode, PdfImportOptions, Size, SmartContentsId, SmartObject, SmartSource};
 use photocraft_format::{LoadOptions, SaveOptions, load_from_bytes, load_from_bytes_with, save_to_bytes, zip};
 use photocraft_geom::Affine;
 
@@ -140,4 +140,33 @@ fn extreme_smart_contents_ids_remap_without_poisoning_allocator() {
     assert!(ids.iter().all(|id| id.0 < u64::MAX / 2));
     assert!(SmartContentsId::fresh().0 < u64::MAX / 2);
     assert!(LayerId::fresh().0 < u64::MAX / 2);
+}
+
+#[test]
+fn smart_pdf_projection_roundtrips_and_legacy_bundles_leave_it_absent() {
+    let mut doc = sample();
+    let selection = PdfImportOptions {
+        mode: PdfImportMode::Render,
+        page: 7,
+        dpi: 144.0,
+        crop_box: PdfBox::Media,
+        color_mode: ColorMode::Cmyk,
+        depth: SampleType::U16,
+        anti_alias: false,
+        pixel_size: Some((640, 480)),
+        image: Some(2),
+    };
+    let LayerContent::Smart(smart) = &mut doc.layers[1].content else { panic!("smart") };
+    smart.pdf_import = Some(selection);
+    let bytes = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
+    let back = load_from_bytes(&bytes).unwrap();
+    let LayerContent::Smart(smart) = &back.layers[1].content else { panic!("smart") };
+    assert_eq!(smart.pdf_import, Some(selection));
+
+    let legacy = rewrite_manifest(&bytes, |manifest| {
+        manifest["document"]["layers"][1]["content"].as_object_mut().unwrap().remove("pdf_import");
+    });
+    let back = load_from_bytes(&legacy).unwrap();
+    let LayerContent::Smart(smart) = &back.layers[1].content else { panic!("smart") };
+    assert_eq!(smart.pdf_import, None);
 }

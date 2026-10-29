@@ -50,6 +50,9 @@ pub struct DocIndex {
 pub struct OpenParams {
     /// Path beneath the configured automation read root: relative (forward slashes) or absolute.
     pub path: String,
+    /// PDF import: preserve authored layers when possible (`auto`), require layers, or render.
+    #[serde(default)]
+    pub layers: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -69,6 +72,9 @@ pub struct PlaceParams {
     /// Centre of the placed layer, in document pixels.
     #[serde(default)]
     pub center: Option<[f64; 2]>,
+    /// PDF import: preserve authored layers when possible (`auto`), require layers, or render.
+    #[serde(default)]
+    pub layers: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -597,20 +603,26 @@ impl PhotocraftMcp {
         to_result(b.call_read("ui.inspect", json!({})).await)
     }
 
-    #[tool(description = "Open an image or document file and make it active. Returns index, size and import warnings.")]
+    #[tool(
+        description = "Open an image or document file and make it active. PDF `layers` is auto, layers, or render; auto preserves authored layers when possible. Returns index, size and import warnings."
+    )]
     async fn doc_open(&self, Parameters(p): Parameters<OpenParams>) -> Result<CallToolResult, McpError> {
-        let path = PathBuf::from(&p.path);
-        if let Some(r) = self.headless_op(move |h| h.open(&path)).await {
+        let mut open = json!({"path": p.path});
+        if let Some(layers) = p.layers {
+            open["layers"] = json!(layers);
+        }
+        let direct = open.clone();
+        if let Some(r) = self.headless_op(move |h| h.handle("doc.open", direct)).await {
             return to_result(r);
         }
         let Some(b) = self.bridge_client() else {
             return Ok(no_backend());
         };
-        to_result(b.call("app.open", json!({"path": p.path})).await)
+        to_result(b.call("app.open", open).await)
     }
 
     #[tool(
-        description = "Place a file into the document as a Smart Object layer (Place Embedded), reading `path` beneath the read root. `scale` (percent), `fit` and `center` are the command's own."
+        description = "Place a file into the document as a Smart Object layer (Place Embedded), reading `path` beneath the read root. `scale` (percent), `fit` and `center` are the command's own; PDF `layers` is auto, layers, or render."
     )]
     async fn doc_place(&self, Parameters(p): Parameters<PlaceParams>) -> Result<CallToolResult, McpError> {
         let mut opts = serde_json::Map::new();
@@ -622,6 +634,9 @@ impl PhotocraftMcp {
         }
         if let Some(v) = p.center {
             opts.insert("center".into(), json!(v));
+        }
+        if let Some(v) = p.layers {
+            opts.insert("layers".into(), json!(v));
         }
         let opts = Value::Object(opts);
         // Bridge mode runs the app on this machine, which reads the path itself like any command.

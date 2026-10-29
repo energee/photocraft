@@ -66,6 +66,8 @@ pub(crate) struct Ctx<'a> {
     /// Layer records decoded so far, out of `total` (progress).
     pub done: usize,
     pub total: usize,
+    /// Whether editable channel or layer data was discarded during conversion.
+    pub damaged: bool,
 }
 
 fn doc_mode(m: PsdMode) -> Option<ColorMode> {
@@ -167,6 +169,7 @@ impl Ctx<'_> {
         match rec.decode_channel(id, self.file.header.depth, self.file.header.version) {
             Ok(p) => Some(p),
             Err(e) => {
+                self.damaged = true;
                 self.warn(format!("layer \"{name}\": channel {id} could not be decoded ({e}); treated as empty"));
                 None
             }
@@ -200,6 +203,7 @@ impl Ctx<'_> {
             let mut planes: Vec<Option<Vec<u8>>> = Vec::with_capacity(decoded.len());
             for (&id, p) in ids.iter().zip(decoded) {
                 if p.is_none() && rec.channel(id).is_some() {
+                    self.damaged = true;
                     self.warn(format!("layer \"{name}\": channel {id} could not be decoded; treated as empty"));
                 }
                 planes.push(p);
@@ -214,6 +218,7 @@ impl Ctx<'_> {
         // Only decoded channel data justifies a buffer: the decoders bound their output by the
         // bytes in the file, but a bare rectangle can declare 300000² pixels in a few bytes (#755).
         if planes.iter().all(Option::is_none) {
+            self.damaged = true;
             self.warn(format!("layer \"{name}\": no channel data for its {w}x{h} bounds; treated as empty"));
             return Surface::new(self.fmt);
         }
@@ -439,6 +444,7 @@ impl Ctx<'_> {
                 warp,
                 stack_mode: None,
                 perspective,
+                pdf_import: None,
             })
         } else if let Some((f, soft)) = soft_shape_fill(rec, vector_key.is_some(), fill_key) {
             // A pattern-filled shape is a pattern fill layer seen through its vector mask (soft
@@ -826,6 +832,14 @@ pub(crate) fn psd_to_document_decoded(
     ctl: &photocraft_raster::Interrupt,
     decoded: Option<photocraft_psd::Result<Vec<u8>>>,
 ) -> Option<(Document, Vec<String>)> {
+    psd_to_document_decoded_with_integrity(file, ctl, decoded).map(|(document, warnings, _)| (document, warnings))
+}
+
+fn psd_to_document_decoded_with_integrity(
+    file: &PsdFile,
+    ctl: &photocraft_raster::Interrupt,
+    decoded: Option<photocraft_psd::Result<Vec<u8>>>,
+) -> Option<(Document, Vec<String>, bool)> {
     let h = &file.header;
     let mut warnings = Vec::new();
     let mode = doc_mode(h.color_mode).unwrap_or_else(|| {
@@ -925,6 +939,7 @@ pub(crate) fn psd_to_document_decoded(
         ctl: *ctl,
         done: 0,
         total: file.layers().len(),
+        damaged: file.unreadable_layer_block().is_some(),
     };
     for b in file.global_blocks.iter().filter(|b| matches!(&b.key, b"FEid" | b"FXid")) {
         // Smart-filter caches can be large: a cancelled open stops between blocks.
@@ -1139,7 +1154,18 @@ pub(crate) fn psd_to_document_decoded(
         return None;
     }
     ctl.progress(1.0);
-    Some((doc, cx.warnings))
+    Some((doc, cx.warnings, cx.damaged))
+}
+
+/// Converts a PSD while reporting damaged editable data instead of silently
+/// accepting an empty channel. PDF layer preservation requires this stricter
+/// result: its composite is not a safe substitute for editable layers.
+pub(crate) fn psd_to_document_decoded_integrity(
+    file: &PsdFile,
+    ctl: &photocraft_raster::Interrupt,
+    decoded: Option<photocraft_psd::Result<Vec<u8>>>,
+) -> Option<(Document, Vec<String>, bool)> {
+    psd_to_document_decoded_with_integrity(file, ctl, decoded)
 }
 
 #[cfg(test)]

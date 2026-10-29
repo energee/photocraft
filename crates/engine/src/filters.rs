@@ -842,6 +842,7 @@ mod tests {
                     contents_id: photocraft_doc::SmartContentsId::fresh(),
                     source: SmartSource::Linked { path: String::new() },
                     transform: photocraft_geom::Affine::IDENTITY,
+                    pdf_import: None,
                     smart_filters: vec![],
                     cache: Some(cache),
                     psd_raw: None,

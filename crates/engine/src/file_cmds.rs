@@ -276,8 +276,12 @@ pub(crate) fn sanitize(name: &str) -> String {
 }
 
 pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
+    import_with_options(name, bytes, &Default::default())
+}
+
+pub(crate) fn import_with_options(name: &str, bytes: &[u8], options: &photocraft_io::ImportOptions) -> Result<Document> {
     crate::allocation::checkpoint("importing document")?;
-    let r = photocraft_io::import(name, bytes).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
+    let r = photocraft_io::import_with_options(name, bytes, options).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
     // Auxiliary imports return only a document and cannot surface the preview's fidelity warning.
     // Open has its own warning-preserving path; never silently place or process a thumbnail.
     if r.preview_only {
@@ -563,16 +567,25 @@ pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&
     open_bytes_with(s, name, bytes, as_ext, path, &opts)
 }
 
-/// The Import PDF answers in a command's params (`page`, `resolution`, `crop`, `mode`, `depth`,
-/// `antiAlias`, `name`, `password`, `image`, `suppressWarnings`), or `None` when it names none:
-/// a PDF then opens with Photoshop's defaults (page 1, Bounding Box, 300 ppi, RGB, 8 bits).
+/// The Import PDF answers in a command's params (`layers`, `page`, `resolution`, `crop`, `mode`,
+/// `depth`, `antiAlias`, `name`, `password`, `image`, `suppressWarnings`), or `None` when it
+/// names none: a PDF then opens with Photoshop's defaults (page 1, Bounding Box, 300 ppi, RGB,
+/// 8 bits).
 pub fn pdf_options(p: &Value) -> Result<Option<photocraft_io::pdf_import::PdfOpenOptions>> {
     use photocraft_io::pdf_import::{CropTo, PdfOpenOptions};
-    let keys = ["page", "resolution", "crop", "mode", "depth", "antiAlias", "name", "password", "image", "suppressWarnings"];
+    let keys = ["layers", "page", "resolution", "crop", "mode", "depth", "antiAlias", "name", "password", "image", "suppressWarnings"];
     if !keys.iter().any(|k| p.get(k).is_some()) {
         return Ok(None);
     }
     let mut o = PdfOpenOptions::default();
+    if let Some(v) = p.get("layers") {
+        o.layer_mode = match v.as_str() {
+            Some("auto") => photocraft_doc::PdfImportMode::Auto,
+            Some("layers") => photocraft_doc::PdfImportMode::Layers,
+            Some("render") => photocraft_doc::PdfImportMode::Render,
+            _ => return Err(EngineError::Other("layers: auto|layers|render".into())),
+        };
+    }
     if let Some(v) = p.get("page") {
         o.page = v.as_u64().filter(|n| *n >= 1).ok_or_else(|| EngineError::Other("page: a page number from 1".into()))? as usize;
     }
@@ -680,6 +693,14 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let mut opts = crate::jobs::import_options(s.prefs());
     opts.pdf = pdf_options(p)?;
     let imported = photocraft_io::import_with_options(name, &bytes, &opts).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
+    let pdf_import =
+        photocraft_io::is_pdf_input(name, &bytes).then(|| opts.pdf.as_ref().map(photocraft_io::pdf_import::PdfOpenOptions::projection).unwrap_or_default());
+    let password_protected = opts.pdf.as_ref().is_some_and(|options| options.password.is_some());
+    if password_protected && linked.is_some() {
+        return Err(EngineError::Other(
+            "a password-protected PDF cannot stay linked; place it embedded so PhotoCraft can store the selected document without saving its password".into(),
+        ));
+    }
     if imported.preview_only {
         return Err(EngineError::Other(format!(
             "{name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
@@ -709,6 +730,9 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let smart = linked.is_some() || p.get("smartObject").and_then(Value::as_bool).unwrap_or(s.prefs().general.always_create_smart_objects_when_placing);
     let source = match linked {
         Some(path) => SmartSource::Linked { path },
+        None if password_protected => {
+            SmartSource::Embedded { file_name: format!("{}.pcraft", stem(name)), bytes: Arc::new(crate::smart_cmds::encode_source(&src)?) }
+        }
         None => SmartSource::Embedded { file_name: file_name(name), bytes: Arc::new(bytes) },
     };
     let layer_name = stem(name);
@@ -716,6 +740,7 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let id = s.edit(label, |doc, active| {
         let layer = if smart {
             let mut so = SmartObject::new(source, Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, Some(px));
+            so.pdf_import = pdf_import.filter(|_| !password_protected);
             // A vector source (SVG) renders at its placement scale instead of as a resampled raster.
             if vector && let Some(sharp) = crate::smart_cmds::render(doc, &so)? {
                 so.cache = Some(sharp);
@@ -1794,7 +1819,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Open As…",
             &["File"],
             Some("Cmd+Alt+Shift+O"),
-            r##"{"path":str,"as":"psd|png|jpg|tiff|…"? (decode as this format),"page":int? (PDF: the page, from 1),"resolution":ppi? (PDF: 300 by default),"crop":"boundingBox|mediaBox|cropBox|bleedBox|trimBox|artBox"? (PDF),"mode":"rgb|gray|cmyk|lab"? (PDF),"depth":8|16? (PDF),"antiAlias":bool? (PDF),"name":str? (PDF: the document name's stem),"image":int? (PDF: open embedded image N instead of a page),"password":str? (PDF),"suppressWarnings":bool? (PDF)}"##,
+            r##"{"path":str,"as":"psd|png|jpg|tiff|…"? (decode as this format),"layers":"auto|layers|render"? (PDF layer handling),"page":int? (PDF: the page, from 1),"resolution":ppi? (PDF: 300 by default),"crop":"boundingBox|mediaBox|cropBox|bleedBox|trimBox|artBox"? (PDF),"mode":"rgb|gray|cmyk|lab"? (PDF),"depth":8|16? (PDF),"antiAlias":bool? (PDF),"name":str? (PDF: the document name's stem),"image":int? (PDF: open embedded image N instead of a page),"password":str? (PDF),"suppressWarnings":bool? (PDF)}"##,
             native,
             open_as
         ),
@@ -1803,7 +1828,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place Embedded…",
             &["File"],
             None,
-            r##"{"path":str,"scale":%? (default: fit when larger than the canvas),"fit":bool? (default: Preferences > General > Resize Image During Place),"smartObject":bool? (default: Preferences > General > Always Create Smart Objects When Placing),"center":[x,y]?,"page":int? (PDF: the page, from 1),"resolution":ppi? (PDF: 300 by default),"crop":"boundingBox|mediaBox|cropBox|bleedBox|trimBox|artBox"? (PDF),"mode":"rgb|gray|cmyk|lab"? (PDF),"depth":8|16? (PDF),"antiAlias":bool? (PDF),"image":int? (PDF: place embedded image N instead of a page),"password":str? (PDF),"suppressWarnings":bool? (PDF)}"##,
+            r##"{"path":str,"scale":%? (default: fit when larger than the canvas),"fit":bool? (default: Preferences > General > Resize Image During Place),"smartObject":bool? (default: Preferences > General > Always Create Smart Objects When Placing),"center":[x,y]?,"layers":"auto|layers|render"? (PDF layer handling),"page":int? (PDF: the page, from 1),"resolution":ppi? (PDF: 300 by default),"crop":"boundingBox|mediaBox|cropBox|bleedBox|trimBox|artBox"? (PDF),"mode":"rgb|gray|cmyk|lab"? (PDF),"depth":8|16? (PDF),"antiAlias":bool? (PDF),"image":int? (PDF: place embedded image N instead of a page),"password":str? (PDF),"suppressWarnings":bool? (PDF)}"##,
             native_doc,
             |s, p| place(s, p, false)
         ),
@@ -1812,7 +1837,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place Linked…",
             &["File"],
             None,
-            r##"{"path":str,"scale":%?,"fit":bool? (default: Preferences > General > Resize Image During Place),"center":[x,y]?,"page":int? (PDF: the page, from 1),"resolution":ppi? (PDF: 300 by default),"crop":"boundingBox|mediaBox|cropBox|bleedBox|trimBox|artBox"? (PDF),"mode":"rgb|gray|cmyk|lab"? (PDF),"depth":8|16? (PDF),"antiAlias":bool? (PDF),"image":int? (PDF: place embedded image N instead of a page),"password":str? (PDF),"suppressWarnings":bool? (PDF)}"##,
+            r##"{"path":str,"scale":%?,"fit":bool? (default: Preferences > General > Resize Image During Place),"center":[x,y]?,"layers":"auto|layers|render"? (PDF layer handling),"page":int? (PDF: the page, from 1),"resolution":ppi? (PDF: 300 by default),"crop":"boundingBox|mediaBox|cropBox|bleedBox|trimBox|artBox"? (PDF),"mode":"rgb|gray|cmyk|lab"? (PDF),"depth":8|16? (PDF),"antiAlias":bool? (PDF),"image":int? (PDF: place embedded image N instead of a page),"password":str? (PDF),"suppressWarnings":bool? (PDF)}"##,
             native_doc,
             |s, p| place(s, p, true)
         ),

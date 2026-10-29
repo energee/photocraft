@@ -171,6 +171,7 @@ pub fn rich_doc(mode: ColorMode, depth: SampleType) -> Document {
             contents_id: SmartContentsId::fresh(),
             source: SmartSource::Embedded { file_name: "inner.png".into(), bytes: blob(11, 2000) },
             transform: Affine::scale(0.5),
+            pdf_import: None,
             smart_filters: vec![SmartFilter {
                 command: "filter.blur.gaussian".into(),
                 params: json!({"radius": 2.5, "nested": {"a": [1, 2, 3]}}),
@@ -200,6 +201,7 @@ pub fn rich_doc(mode: ColorMode, depth: SampleType) -> Document {
             contents_id: SmartContentsId::fresh(),
             source: SmartSource::Linked { path: "/tmp/linked.psd".into() },
             transform: Affine::IDENTITY,
+            pdf_import: None,
             smart_filters: vec![],
             cache: None,
             psd_raw: Some(blob(12, 8)),

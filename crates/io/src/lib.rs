@@ -56,6 +56,7 @@ pub use ora::losses as ora_losses;
 pub mod pattern_map;
 pub mod pdf;
 pub mod pdf_import;
+mod pdf_layers;
 mod pdn;
 pub mod pixels;
 mod psd_export;
@@ -376,12 +377,8 @@ fn import_stages(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt, o
     }
     // A PDF opens through the Import PDF options (a plain `import` takes Photoshop's defaults).
     if is_pdf_input(name, bytes) {
-        let Some(chosen) = opts.pdf.as_ref() else { return pdf_import::import_pdf(name, bytes, &pdf_import::PdfOpenOptions::default(), ctl) };
-        // What Import PDF answers open (a page, an embedded image) is untitled, as in Photoshop:
-        // only a one-image PDF opened directly, like a picture, takes the PDF as its file.
-        let mut r = pdf_import::import_pdf(name, bytes, chosen, ctl)?;
-        r.source_read_only = true;
-        return Ok(r);
+        let defaults = pdf_import::PdfOpenOptions::default();
+        return pdf_import::import_pdf(name, bytes, opts.pdf.as_ref().unwrap_or(&defaults), ctl);
     }
     if is_svg_input(name, bytes) {
         return svg::import_svg_with_group_depth(name, bytes, max_group_depth);

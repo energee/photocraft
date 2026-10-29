@@ -142,6 +142,42 @@ fn contents_uuid(contents_id: SmartContentsId, bytes: &[u8]) -> String {
     identity.update(bytes);
     crate::smart_map::uuid_from(identity.finalize().as_bytes())
 }
+fn pdf_selection_key(options: Option<&photocraft_doc::PdfImportOptions>) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    if let Some(options) = options {
+        hash.update(b"\0pdf-import\0");
+        hash.update(&[options.mode as u8, options.crop_box as u8, options.color_mode as u8, options.depth as u8, u8::from(options.anti_alias)]);
+        hash.update(&options.page.to_le_bytes());
+        hash.update(&options.dpi.to_bits().to_le_bytes());
+        match options.pixel_size {
+            Some((width, height)) => {
+                hash.update(&[1]);
+                hash.update(&width.to_le_bytes());
+                hash.update(&height.to_le_bytes());
+            }
+            None => {
+                hash.update(&[0]);
+            }
+        }
+        match options.image {
+            Some(image) => {
+                hash.update(&[1]);
+                hash.update(&image.to_le_bytes());
+            }
+            None => {
+                hash.update(&[0]);
+            }
+        }
+    }
+    *hash.finalize().as_bytes()
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct ConvertedSourceKey {
+    contents: SmartContentsId,
+    bytes: [u8; 32],
+    projection: [u8; 32],
+}
 
 /// Smart-object state collected while emitting layers, written into the global blocks at the end.
 #[derive(Default)]
@@ -158,8 +194,8 @@ struct SmartOut {
     prune_ok: bool,
     /// Files to embed.
     add: Vec<crate::linked::LinkedFile>,
-    /// Sources converted so far, by contents identity and bytes (`Err` = can't be embedded).
-    converted: std::collections::HashMap<(SmartContentsId, [u8; 32]), Result<Source, String>>,
+    /// Sources converted so far, by contents identity, bytes and PDF projection (`Err` = can't be embedded).
+    converted: std::collections::HashMap<ConvertedSourceKey, Result<Source, String>>,
     /// Each placed layer has its own id, even when it duplicates an imported layer.
     placed_used: std::collections::HashSet<String>,
     /// Original instances reserve their imported placement regardless of layer order.
@@ -918,9 +954,15 @@ impl Ex {
     fn smart_source(&mut self, sm: &photocraft_doc::SmartObject, template: Option<&crate::smart_map::Placed>) -> Result<Source, String> {
         use photocraft_doc::SmartSource;
         match &sm.source {
+            // A PDF projection is materialized as a PSB, including an imported PDF held in lnk2.
+            SmartSource::Linked { path } if sm.pdf_import.is_some() && self.smart.known.contains(path) => {
+                let meta = photocraft_doc::Metadata { psd_global_blocks: self.smart.globals.clone(), ..Default::default() };
+                let source = crate::linked::find_linked_file(&meta, path).ok_or_else(|| format!("the embedded PDF source {path} can't be read"))?;
+                self.embed(sm.contents_id, &source.file_name, &source.bytes, sm.pdf_import.as_ref())
+            }
             // A file of the imported document, or one its placed-layer data names (a missing
             // link stays a smart object, as in Photoshop).
-            SmartSource::Linked { path } if self.smart.known.contains(path) || template.is_some_and(|t| t.idnt == *path) => {
+            SmartSource::Linked { path } if sm.pdf_import.is_none() && (self.smart.known.contains(path) || template.is_some_and(|t| t.idnt == *path)) => {
                 let stored = template.filter(|t| t.idnt == *path).and_then(|t| crate::smart_map::stored_size(&t.descriptor));
                 let geometry = stored.map(|size| (size, f64::from(self.dpi))).or_else(|| {
                     let meta = photocraft_doc::Metadata { psd_global_blocks: self.smart.globals.clone(), ..Default::default() };
@@ -929,7 +971,6 @@ impl Ex {
                 });
                 let (size, dpi) = geometry.unwrap_or((size_from_layer(sm), f64::from(self.dpi)));
                 let original = self.smart.linked_contents.entry(path.clone()).or_insert(sm.contents_id);
-                // An absent Idnt is not a shared-source identity; import treats each as fresh.
                 let uuid = if path.is_empty() || *original == sm.contents_id {
                     path.clone()
                 } else {
@@ -961,12 +1002,12 @@ impl Ex {
                     let bytes = std::fs::read(file).map_err(|e| format!("the linked file {path} can't be read: {e}"))?;
                     let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
                     self.warnings.push(format!("the linked smart object {name} was embedded (PSD export keeps no external links)"));
-                    self.embed(sm.contents_id, &name, &bytes)
+                    self.embed(sm.contents_id, &name, &bytes, sm.pdf_import.as_ref())
                 }
                 #[cfg(target_arch = "wasm32")]
                 Err(format!("the linked file {path} can't be read here"))
             }
-            SmartSource::Embedded { file_name, bytes } => self.embed(sm.contents_id, file_name, bytes),
+            SmartSource::Embedded { file_name, bytes } => self.embed(sm.contents_id, file_name, bytes, sm.pdf_import.as_ref()),
         }
     }
 
@@ -1009,20 +1050,47 @@ impl Ex {
         c
     }
 
-    /// Adds `bytes` as an embedded file (converted to PSB when it is a `.pcraft` bundle), once
-    /// per contents identity and bytes. Equal bytes in independent objects stay independent.
-    fn embed(&mut self, contents_id: SmartContentsId, file_name: &str, bytes: &[u8]) -> Result<Source, String> {
-        let key = (contents_id, *blake3::hash(bytes).as_bytes());
+    /// Adds bytes once per contents identity, source bytes and PDF projection.
+    fn embed(
+        &mut self,
+        contents_id: SmartContentsId,
+        file_name: &str,
+        bytes: &[u8],
+        pdf_import: Option<&photocraft_doc::PdfImportOptions>,
+    ) -> Result<Source, String> {
+        let key = ConvertedSourceKey { contents: contents_id, bytes: *blake3::hash(bytes).as_bytes(), projection: pdf_selection_key(pdf_import) };
         if let Some(r) = self.smart.converted.get(&key) {
             return r.clone();
         }
-        let r = self.convert_source(contents_id, file_name, bytes);
+        let r = self.convert_source(contents_id, file_name, bytes, pdf_import);
         self.smart.converted.insert(key, r.clone());
         r
     }
 
-    fn convert_source(&mut self, contents_id: SmartContentsId, file_name: &str, bytes: &[u8]) -> Result<Source, String> {
-        let (name, data, size, dpi, nested) = if photocraft_format::is_pcraft(bytes) {
+    fn convert_source(
+        &mut self,
+        contents_id: SmartContentsId,
+        file_name: &str,
+        bytes: &[u8],
+        pdf_import: Option<&photocraft_doc::PdfImportOptions>,
+    ) -> Result<Source, String> {
+        let (name, data, size, dpi, nested) = if let Some(pdf_import) = pdf_import {
+            if self.smart.depth >= MAX_NESTING {
+                return Err(format!("smart objects nest more than {MAX_NESTING} deep"));
+            }
+            let options = crate::ImportOptions { pdf: Some(crate::pdf_import::PdfOpenOptions::from_projection(*pdf_import)), ..Default::default() };
+            let doc = crate::import_with_options(file_name, bytes, &options).map_err(|e| format!("its selected PDF page can't be read: {e}"))?.document;
+            let (file, warnings) = document_to_psd_nested(
+                &doc,
+                &PsdExportOptions { force_psb: true, document_path: self.document.clone(), ..Default::default() },
+                self.smart.depth + 1,
+                &Interrupt::NONE,
+            );
+            let data = file.to_bytes().map_err(|e| format!("its contents can't be written: {e}"))?;
+            let stem = file_name.rsplit_once('.').map_or(file_name, |(a, _)| a);
+            self.warnings.extend(warnings.into_iter().map(|warning| format!("smart object {stem}: {warning}")));
+            (format!("{stem}.psb"), data, (f64::from(doc.size.width), f64::from(doc.size.height)), f64::from(doc.resolution_dpi), Some(doc))
+        } else if photocraft_format::is_pcraft(bytes) {
             if self.smart.depth >= MAX_NESTING {
                 return Err(format!("smart objects nest more than {MAX_NESTING} deep"));
             }
@@ -1039,7 +1107,6 @@ impl Ex {
             let size = (f64::from(doc.size.width), f64::from(doc.size.height));
             (format!("{stem}.psb"), data, size, f64::from(doc.resolution_dpi), Some(doc))
         } else {
-            // Formats we can't decode (vector PDF/AI…) are still embedded; their size comes from the layer.
             let (size, dpi) =
                 crate::linked::source_geometry(file_name, bytes, &photocraft_raster::Interrupt::NONE).unwrap_or(((0.0, 0.0), f64::from(self.dpi)));
             (file_name.to_string(), bytes.to_vec(), size, dpi, None)

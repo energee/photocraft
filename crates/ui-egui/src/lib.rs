@@ -420,13 +420,11 @@ pub(crate) fn saved_revision_after_write(confirmed: bool, written: u64, previous
     if confirmed { written } else { previous }
 }
 
-/// Whether a document opened from `name`'s `bytes` with `opts` must stay untitled rather than
-/// take the PDF as its file, as Photoshop leaves it: a rasterised page, or anything Import PDF
-/// opened (a page or an embedded image). Only a one-image PDF opened directly, like a picture,
-/// keeps the PDF. (The importer says the same through `source_read_only`, which the import hook
-/// doesn't pass on.)
-fn pdf_untitled(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> bool {
-    photocraft_io::is_pdf_input(name, bytes) && (opts.pdf.is_some() || !photocraft_io::pdf_import::opens_as_image(bytes, None))
+/// Whether a document opened from `name`'s `bytes` must stay untitled rather than take the PDF as
+/// its file. PDF import never saves over its source, including a one-image PDF that bypasses the
+/// Import PDF dialog; a PDF can be identified by its trusted content signature, not its suffix.
+fn pdf_untitled(name: &str, bytes: &[u8], _opts: &photocraft_io::ImportOptions) -> bool {
+    photocraft_io::is_pdf_input(name, bytes)
 }
 
 /// Who a finished save serves.
@@ -1509,13 +1507,19 @@ impl PhotocraftApp {
     /// Returns the import warnings (also shown to the user). Brush and gradient
     /// files go to the preset libraries, as for interactive opens.
     pub fn open_automation_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+        let opts = photocraft_engine::jobs::import_options(self.session.prefs());
+        self.open_automation_bytes_with(name, bytes, opts)
+    }
+
+    /// [`open_automation_bytes`](Self::open_automation_bytes) with explicit Import PDF options.
+    pub fn open_automation_bytes_with(&mut self, name: &str, bytes: &[u8], opts: photocraft_io::ImportOptions) -> Result<Vec<String>, String> {
         let events_enabled = self.session.prefs().script_events.enabled;
         if events_enabled {
             self.session.edit_prefs(|prefs| prefs.script_events.enabled = false);
         }
         let result = match preset_files_ui::open(self, name, bytes) {
             Some(r) => r.map(|()| Vec::new()),
-            None => self.import_automation_document(name, bytes),
+            None => self.import_automation_document(name, bytes, opts),
         };
         if events_enabled {
             self.session.edit_prefs(|prefs| prefs.script_events.enabled = true);
@@ -1525,9 +1529,8 @@ impl PhotocraftApp {
 
     /// The document half of [`open_automation_bytes`](Self::open_automation_bytes): no script
     /// events and no Color Settings policy (which may read user-configured profile paths).
-    fn import_automation_document(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+    fn import_automation_document(&mut self, name: &str, bytes: &[u8], opts: photocraft_io::ImportOptions) -> Result<Vec<String>, String> {
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
-        let opts = photocraft_engine::jobs::import_options(self.session.prefs());
         let (doc, warnings) = import(name, bytes, &opts)?;
         // The caller records the path it read from.
         self.session.add_document(doc, None);

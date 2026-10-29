@@ -7,9 +7,9 @@
 //! Methods (camelCase params):
 //! - `engine.execute {command, params?, wait?}` / `engine.commands {filter?}`
 //! - `jobs.list` / `jobs.cancel {job?}`: background jobs (#210)
-//! - `session.list`, `doc.open {path}`, `doc.new {…file.new params}`,
-//!   `doc.place {path, scale?, fit?, center?, index?}` (#2810: the read root is the scope,
-//!   the counterpart of the refused ambient `file.placeEmbedded`),
+//! - `session.list`, `doc.open {path, layers?}` (`layers`: auto, layers, render for PDFs),
+//!   `doc.new {…file.new params}`, `doc.place {path, scale?, fit?, center?, layers?, index?}`
+//!   (#2810: the read root is the scope, the counterpart of the refused ambient `file.placeEmbedded`),
 //!   `doc.exportLayers {dir, format?, prefix?, visibleOnly?, quality?, index?}`,
 //!   `doc.exportDataSets {dir, format?, dataSets?, naming?, index?}`,
 //!   `doc.importDataSets {path, delimiter?, index?}` (#3216: the same treatment for the export
@@ -99,7 +99,9 @@ impl Headless {
             "session.list" => Ok(self.session_list()),
             "doc.open" => {
                 let path = str_of(&p, "path").ok_or_else(|| bad("doc.open needs `path`"))?;
-                self.open(&PathBuf::from(path))
+                let mut opts = photocraft_engine::jobs::import_options(self.session.prefs());
+                opts.pdf = photocraft_engine::file_cmds::pdf_options(&p).map_err(|e| bad(e.to_string()))?;
+                self.open_with(&PathBuf::from(path), &opts)
             }
             "doc.place" => {
                 let path = str_of(&p, "path").ok_or_else(|| bad("doc.place needs `path`"))?;

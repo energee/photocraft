@@ -29,10 +29,11 @@ USAGE:
       Print the document as JSON (size, mode, depth, layer tree).
   PDF flags (convert and info; other files ignore them):
       [--page <n>] [--image <n>] [--resolution <ppi>] [--crop <boundingBox|mediaBox|cropBox|bleedBox|trimBox|artBox>]
-      [--mode <rgb|gray|cmyk|lab>] [--depth <8|16>] [--no-antialias]
+      [--mode <rgb|gray|cmyk|lab>] [--depth <8|16>] [--no-antialias] [--layers <auto|layers|render>]
       --page opens page n (from 1; default 1), --image embedded image n instead of a page (Images
       mode). --resolution defaults to 300 ppi, --crop to boundingBox, --mode to rgb, --depth to 8;
-      --no-antialias renders without anti-aliasing.
+      --no-antialias renders without anti-aliasing. --layers defaults to auto, which preserves
+      authored PDF layers when possible; render applies the page raster settings.
   photocraft-cli run (<file> | --new <json>) --cmd <id> [--params <json>] [--cmd …] [--out <file>] [--format <ext>] [--quality <1-100>] [--tiff-layers] [--tga-bits <24|32>] [--dpx-bits <8|10|12|16>] [--dds-compression <none|bc1|bc2|bc3>] [--dds-mipmaps]
       Open a file, run engine commands in order, save the result. Each --params
       applies to the preceding --cmd. Prints each command's JSON result.
@@ -80,13 +81,26 @@ struct Subcommand {
 const SUBCOMMANDS: &[Subcommand] = &[
     Subcommand {
         name: "convert",
-        values: &["--format", "--quality", "--tga-bits", "--dpx-bits", "--dds-compression", "--page", "--resolution", "--crop", "--mode", "--depth", "--image"],
+        values: &[
+            "--format",
+            "--quality",
+            "--tga-bits",
+            "--dpx-bits",
+            "--dds-compression",
+            "--page",
+            "--resolution",
+            "--crop",
+            "--mode",
+            "--depth",
+            "--image",
+            "--layers",
+        ],
         bare: &["--tiff-layers", "--dds-mipmaps", "--no-antialias"],
         run: convert,
     },
     Subcommand {
         name: "info",
-        values: &["--page", "--resolution", "--crop", "--mode", "--depth", "--image"],
+        values: &["--page", "--resolution", "--crop", "--mode", "--depth", "--image", "--layers"],
         bare: &["--compact", "--no-antialias"],
         run: |a, out, _| info(a, out),
     },
@@ -277,8 +291,8 @@ fn convert(a: &Args, _out: &mut dyn Write, err: &mut dyn Write) -> R {
 }
 
 /// The Import PDF answers from `--page`, `--resolution`, `--crop`, `--mode`, `--depth`,
-/// `--no-antialias` and `--image` (`photocraft_engine::file_cmds::pdf_options` validates them);
-/// other files ignore them.
+/// `--no-antialias`, `--image` and `--layers` (`photocraft_engine::file_cmds::pdf_options`
+/// validates them); other files ignore them.
 fn import_opts(a: &Args) -> Result<photocraft_io::ImportOptions, String> {
     let mut p = serde_json::Map::new();
     for (flag, key) in [("--page", "page"), ("--image", "image"), ("--depth", "depth")] {
@@ -291,7 +305,7 @@ fn import_opts(a: &Args) -> Result<photocraft_io::ImportOptions, String> {
         let r: f64 = v.parse().map_err(|_| "--resolution needs a number (pixels per inch)".to_string())?;
         p.insert("resolution".into(), json!(r));
     }
-    for (flag, key) in [("--crop", "crop"), ("--mode", "mode")] {
+    for (flag, key) in [("--crop", "crop"), ("--mode", "mode"), ("--layers", "layers")] {
         if let Some(v) = a.get(flag) {
             p.insert(key.into(), json!(v));
         }
@@ -489,7 +503,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 
 fn is_input(p: &Path) -> bool {
     let known = |e: &str| {
-        matches!(e, "pcraft" | "psd" | "psb" | "pdn" | "ora" | "kra" | "krz" | "af" | "afdesign" | "afphoto" | "afpub")
+        matches!(e, "pcraft" | "psd" | "psb" | "pdf" | "pdn" | "ora" | "kra" | "krz" | "af" | "afdesign" | "afphoto" | "afpub")
             || photocraft_codecs::from_extension(e).is_some_and(|f| photocraft_codecs::caps(f).read)
     };
     p.is_file() && p.extension().is_some_and(|e| known(&e.to_string_lossy().to_ascii_lowercase()))
@@ -547,12 +561,22 @@ fn batch(a: &Args, out: &mut dyn Write, err: &mut dyn Write) -> R {
         let target = out_dir.join(format!("{stem}.{ext}"));
         let target_text = target.to_string_lossy();
         let r = (|| -> Result<Vec<String>, String> {
-            written.check(&target_text)?;
+            let replaces_input = photocraft_engine::file_cmds::same_file(&input.to_string_lossy(), &target_text);
             let mut h = Headless::trusted_local();
+            // A PDF's source is read-only even when its file name has an ordinary raster extension.
+            h.open(input).map_err(|e| e.to_string())?;
+            if replaces_input {
+                if h.session.active().is_some_and(|state| state.source_read_only) {
+                    return Err(format!("not written: {} is a read-only input", target.display()));
+                }
+                if !a.has("--in-place") {
+                    return Err(format!("{} is an input file: use --in-place to overwrite it", target.display()));
+                }
+            }
+            written.check(&target_text)?;
             // Steps that play another action find it in the set; the session's playback stack
             // stops an action that calls itself.
             h.session.actions.list = set.clone();
-            h.open(input).map_err(|e| e.to_string())?;
             for (id, p) in &actions {
                 if photocraft_engine::actions_cmds::shell_view_command(id) || photocraft_engine::actions_cmds::shell_save_command(id) {
                     continue;
@@ -871,5 +895,13 @@ mod usage_tests {
                 assert!(USAGE.contains(&format!("[{flag}")) || USAGE.contains(&format!("{flag} ")), "{} takes {flag}, which USAGE doesn't list", sub.name);
             }
         }
+    }
+
+    #[test]
+    fn pdf_layers_flag_uses_the_separate_layers_key() {
+        let args = Args { positional: Vec::new(), flags: vec![("--layers".into(), Some("render".into())), ("--mode".into(), Some("gray".into()))] };
+        let pdf = import_opts(&args).unwrap().pdf.unwrap();
+        assert_eq!(format!("{:?}", pdf.layer_mode), "Render");
+        assert_eq!(format!("{:?}", pdf.mode), "Grayscale");
     }
 }
