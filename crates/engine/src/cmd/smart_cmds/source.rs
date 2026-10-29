@@ -82,8 +82,23 @@ const CACHE_ENTRIES: usize = 32;
 
 const CACHE_BYTES: usize = 1 << 30;
 
-pub(super) fn cache_key(bytes: &[u8], fmt: PixelFormat) -> CacheKey {
-    (*blake3::hash(bytes).as_bytes(), fmt)
+/// Source identity includes the effective PDF selection, not only its unchanged file bytes.
+pub(super) fn cache_key(bytes: &[u8], fmt: PixelFormat, pdf_import: Option<photocraft_doc::PdfImportOptions>) -> CacheKey {
+    let mut hash = blake3::Hasher::new();
+    hash.update(bytes);
+    hash_pdf_import(&mut hash, pdf_import);
+    (*hash.finalize().as_bytes(), fmt)
+}
+
+/// Shared by decoded-source and placed-stage caches so neither can reuse another PDF page.
+/// Explicit defaults and legacy `None` are equivalent and share their cache entries.
+pub(super) fn hash_pdf_import(hash: &mut blake3::Hasher, pdf_import: Option<photocraft_doc::PdfImportOptions>) {
+    if let Some(pdf) = pdf_import.filter(|pdf| *pdf != Default::default()) {
+        hash.update(b"\0pdf-import\0");
+        hash.update(&[pdf.mode as u8, pdf.crop_box as u8]);
+        hash.update(&pdf.page.to_le_bytes());
+        hash.update(&pdf.dpi.to_bits().to_le_bytes());
+    }
 }
 
 pub(super) fn cache_get(key: &CacheKey) -> Option<SourceImage> {
@@ -108,9 +123,9 @@ pub(super) fn cache_put(key: CacheKey, image: SourceImage) {
     }
 }
 
-/// How many times these contents were decoded at this pixel format (0 = never / evicted).
+/// Number of decodes with default source-import settings at this pixel format (0 = never/evicted).
 pub fn source_decode_count(bytes: &[u8], fmt: PixelFormat) -> u32 {
-    let key = cache_key(bytes, fmt);
+    let key = cache_key(bytes, fmt, None);
     SOURCE_CACHE.lock().ok().and_then(|c| c.iter().find(|e| e.key == key).map(|e| e.decodes)).unwrap_or(0)
 }
 
@@ -206,13 +221,13 @@ pub(super) fn vector_scale(sm: &SmartObject) -> f64 {
     ((k * 16.0).ceil() / 16.0).clamp(1.0 / 16.0, 64.0)
 }
 
-/// The composited source image of `bytes` in pixel format `fmt` (decoded once, then cached).
-pub fn source_image(file_name: &str, bytes: &[u8], fmt: PixelFormat) -> Result<SourceImage> {
-    let key = cache_key(bytes, fmt);
+/// Composite the selected source page in `fmt`, caching by bytes, format and PDF import settings.
+pub fn source_image(file_name: &str, bytes: &[u8], fmt: PixelFormat, pdf_import: Option<photocraft_doc::PdfImportOptions>) -> Result<SourceImage> {
+    let key = cache_key(bytes, fmt, pdf_import);
     if let Some(img) = cache_get(&key) {
         return Ok(img);
     }
-    let doc = decode_source(file_name, bytes)?;
+    let doc = decode_source(file_name, bytes, pdf_import)?;
     let buf = photocraft_compose::flatten(&doc);
     let img = SourceImage { surface: Arc::new(source_surface(&doc, &buf, fmt)?), bounds: doc.bounds() };
     cache_put(key, img.clone());

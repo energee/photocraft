@@ -26,18 +26,28 @@ pub(super) fn set_source(
 ) -> Result<Value> {
     let id = layer_param(s, p)?;
     let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+    let pdf_import = smart(doc, id)?.pdf_import;
     let new = make(&doc.metadata, &smart(doc, id)?.source)?;
-    set_shared_source(s, id, label, keep_psd, new)
+    set_shared_source(s, id, label, keep_psd, new, pdf_import)
 }
 
 // Keep the shared-instance transaction out of the per-command source-builder instantiations.
-fn set_shared_source(s: &mut Session, id: LayerId, label: &str, keep_psd: bool, new: SmartSource) -> Result<Value> {
+fn set_shared_source(
+    s: &mut Session,
+    id: LayerId,
+    label: &str,
+    keep_psd: bool,
+    new: SmartSource,
+    pdf_import: Option<photocraft_doc::PdfImportOptions>,
+) -> Result<Value> {
     let (parent, contents_id, changed, warnings) = s.edit(label, |doc, _| {
         let contents_id = smart(doc, id)?.contents_id;
         let changed = instances(doc, contents_id);
         let mut warnings = std::collections::BTreeSet::new();
         for &instance in &changed {
-            smart_mut(doc, instance)?.source = new.clone();
+            let sm = smart_mut(doc, instance)?;
+            sm.source = new.clone();
+            sm.pdf_import = pdf_import;
             if !keep_psd {
                 detach_psd(doc.layer_mut(instance).ok_or(EngineError::NoLayer(instance))?);
             }
@@ -71,8 +81,11 @@ pub fn replace_contents_from_bytes(s: &mut Session, p: &Value, file_name: &str, 
 
 /// Replace Contents from a file's name and bytes: what the desktop and web file pickers hand over.
 pub fn replace_contents_bytes(s: &mut Session, id: LayerId, file_name: &str, bytes: Vec<u8>) -> Result<Value> {
-    decode_source(file_name, &bytes)?; // fail before touching the document
-    set_shared_source(s, id, "Replace Contents", false, SmartSource::Embedded { file_name: file_name.to_string(), bytes: Arc::new(bytes) })
+    let previous = smart(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?.pdf_import;
+    let pdf_import = (bytes.starts_with(b"%PDF-") || std::path::Path::new(file_name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf")))
+        .then(|| previous.unwrap_or_default());
+    decode_source(file_name, &bytes, pdf_import)?; // fail before touching the document
+    set_shared_source(s, id, "Replace Contents", false, SmartSource::Embedded { file_name: file_name.to_string(), bytes: Arc::new(bytes) }, pdf_import)
 }
 
 /// The file name and bytes of smart object `id`'s contents.
@@ -98,7 +111,8 @@ pub(super) fn export_contents(s: &mut Session, p: &Value) -> Result<Value> {
         crate::file_cmds::write_file(path, &bytes)?;
         return Ok(json!({"path": path, "fileName": name, "bytes": bytes.len(), "converted": false}));
     }
-    let contents = decode_source(&name, &bytes)?;
+    let pdf_import = smart(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?.pdf_import;
+    let contents = decode_source(&name, &bytes, pdf_import)?;
     let r = photocraft_io::export(&contents, path, &Default::default()).map_err(|e| other(format!("can't export the contents as {}: {e}", base_name(path))))?;
     crate::file_cmds::write_file(path, &r.bytes)?;
     Ok(json!({"path": path, "fileName": name, "bytes": r.bytes.len(), "converted": true, "warnings": r.warnings}))
@@ -119,7 +133,7 @@ pub(super) fn edit_contents(s: &mut Session, p: &Value) -> Result<Value> {
     let source = &smart(&st.doc, id)?.source;
     let (name, bytes) = authorized_source_bytes(s, "layer.smartObjects.editContents", &st.doc.metadata, source)?
         .ok_or_else(|| other("the smart object's contents are unavailable"))?;
-    let mut child = decode_source(&name, &bytes)?;
+    let mut child = decode_source(&name, &bytes, smart(&st.doc, id)?.pdf_import)?;
     // Bundles keep their document id; each open copy needs its own.
     child.id = DocId::fresh();
     child.name = name;
@@ -155,6 +169,7 @@ pub fn commit_child(s: &mut Session, index: usize) -> Result<bool> {
             };
             let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
             sm.source = SmartSource::Embedded { file_name: format!("{stem}.pcraft"), bytes: bytes.clone() };
+            sm.pdf_import = None;
             detach_psd(doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?);
             refresh_or_fail(doc, id)?;
         }

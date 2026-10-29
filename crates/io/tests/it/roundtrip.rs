@@ -125,6 +125,7 @@ fn text_shape_smart_raw_blocks_survive() {
             filter_mask: None,
             warp: None,
             stack_mode: None,
+            pdf_import: None,
             perspective: None,
         }),
     );

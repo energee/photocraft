@@ -76,12 +76,22 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
         let target = out_dir.join(format!("{stem}.{ext}"));
         let target_text = target.to_string_lossy();
         let r = (|| -> Result<Vec<String>> {
-            written.check(&target_text).map_err(CliError::OutputClaimed)?;
+            let replaces_input = photocraft_engine::file_cmds::same_file(input, &target);
             let mut h = Headless::trusted_local();
+            // A PDF's source is read-only even when its file name has an ordinary raster extension.
+            h.open(input)?;
+            if replaces_input {
+                if h.session.active().is_some_and(|state| state.source_read_only) {
+                    return Err(CliError::OutputClaimed(format!("not written: {} is a read-only input", target.display())));
+                }
+                if !a.in_place {
+                    return Err(CliError::OutIsInput(target.clone()));
+                }
+            }
+            written.check(&target_text).map_err(CliError::OutputClaimed)?;
             // Steps that play another action find it in the set; the session's playback stack
             // stops an action that calls itself.
             h.session.actions.list = set.clone();
-            h.open(input)?;
             for (id, p) in &actions {
                 if photocraft_engine::actions_cmds::shell_view_command(id) || photocraft_engine::actions_cmds::shell_save_command(id) {
                     continue;

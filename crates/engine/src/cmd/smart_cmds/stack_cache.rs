@@ -37,6 +37,7 @@ pub const BUDGET: usize = 768 << 20;
 pub(super) fn placed_key(bytes: &[u8], fmt: PixelFormat, sm: &SmartObject, canvas: Rect) -> StageKey {
     let mut h = blake3::Hasher::new();
     h.update(bytes);
+    super::source::hash_pdf_import(&mut h, sm.pdf_import);
     for v in sm.transform.m {
         h.update(&v.to_bits().to_le_bytes());
     }

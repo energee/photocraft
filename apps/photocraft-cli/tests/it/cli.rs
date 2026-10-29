@@ -804,6 +804,68 @@ fn batch_refuses_to_write_over_its_inputs() {
     assert!(after.iter().zip(&before).all(|(a, b)| a.0 == b.0 && a.1 != b.1), "both inputs replaced");
 }
 
+/// Batch never overwrites a PDF source, including when `--in-place` or a distinct output
+/// directory's file alias resolves to that source; an ordinary distinct PDF target succeeds.
+#[test]
+fn batch_does_not_overwrite_a_pdf_input() {
+    let d = tmp("batch-pdf-output-alias");
+    let input = d.join("in");
+    let aliased_output = d.join("aliased-output");
+    std::fs::create_dir_all(&input).unwrap();
+    std::fs::create_dir_all(&aliased_output).unwrap();
+    let source = input.join("page.pdf");
+    ok(bin().args(["run", "--new", r#"{"width":4,"height":2,"background":"white"}"#, "--out"]).arg(&source));
+    let original = std::fs::read(&source).unwrap();
+    let actions = d.join("actions.json");
+    std::fs::write(&actions, "[]").unwrap();
+    let refused_in_place =
+        bin().args(["batch", "--actions"]).arg(&actions).args(["--in"]).arg(&input).args(["--out"]).arg(&input).arg("--in-place").output().unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&refused_in_place.stdout), String::from_utf8_lossy(&refused_in_place.stderr));
+    assert_eq!(refused_in_place.status.code(), Some(1), "{stdout}{stderr}");
+    assert!(stdout.contains("0 succeeded, 1 failed"), "{stdout}");
+    assert!(stderr.contains("not written"), "{stderr}");
+    assert_eq!(std::fs::read(&source).unwrap(), original, "--in-place changed the source PDF");
+
+    std::fs::hard_link(&source, aliased_output.join("page.pdf")).unwrap();
+
+    let refused = bin().args(["batch", "--actions"]).arg(&actions).args(["--in"]).arg(&input).args(["--out"]).arg(&aliased_output).output().unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&refused.stdout), String::from_utf8_lossy(&refused.stderr));
+    assert_eq!(refused.status.code(), Some(1), "{stdout}{stderr}");
+    assert!(stdout.contains("0 succeeded, 1 failed"), "{stdout}");
+    assert!(stderr.contains("not written"), "{stderr}");
+    assert_eq!(std::fs::read(&source).unwrap(), original, "the aliased target changed the source PDF");
+
+    let output = d.join("output");
+    let exported = bin().args(["batch", "--actions"]).arg(&actions).args(["--in"]).arg(&input).args(["--out"]).arg(&output).output().unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&exported.stdout), String::from_utf8_lossy(&exported.stderr));
+    assert!(exported.status.success(), "{stdout}{stderr}");
+    assert!(stdout.contains("1 succeeded, 0 failed"), "{stdout}");
+    assert!(std::fs::read(output.join("page.pdf")).unwrap().starts_with(b"%PDF-"));
+    assert_eq!(std::fs::read(&source).unwrap(), original, "the distinct export changed the source PDF");
+}
+
+/// PDF import marks the source read-only from its content, not from a raster-looking file name.
+#[test]
+fn batch_does_not_overwrite_a_pdf_named_png() {
+    let d = tmp("batch-pdf-magic");
+    let input = d.join("in");
+    std::fs::create_dir_all(&input).unwrap();
+    let template = d.join("template.pdf");
+    ok(bin().args(["run", "--new", r#"{"width":4,"height":2,"background":"white"}"#, "--out"]).arg(&template));
+    let source = input.join("page.png");
+    std::fs::write(&source, std::fs::read(&template).unwrap()).unwrap();
+    let original = std::fs::read(&source).unwrap();
+    let actions = d.join("actions.json");
+    std::fs::write(&actions, "[]").unwrap();
+
+    let refused = bin().args(["batch", "--actions"]).arg(&actions).args(["--in"]).arg(&input).args(["--out"]).arg(&input).arg("--in-place").output().unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&refused.stdout), String::from_utf8_lossy(&refused.stderr));
+    assert_eq!(refused.status.code(), Some(1), "{stdout}{stderr}");
+    assert!(stdout.contains("0 succeeded, 1 failed"), "{stdout}");
+    assert!(stderr.contains("not written"), "{stderr}");
+    assert_eq!(std::fs::read(&source).unwrap(), original, "--in-place changed the PDF-named PNG");
+}
+
 /// #7437: `convert` to its own input file, however the output is spelt, is refused before
 /// anything is read or written, unless `--in-place` asks for it (as `batch` does, #492).
 #[test]

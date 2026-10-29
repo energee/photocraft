@@ -4,6 +4,64 @@ fn document(width: u32, height: u32) -> Document {
     Document::new("size estimate", photocraft_geom::Size::new(width, height), ColorMode::Rgb, SampleType::U8)
 }
 
+fn two_page_pdf() -> Vec<u8> {
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 20] /Resources << >> /Contents 5 0 R >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 30 40] /Resources << >> /Contents 6 0 R >>".to_string(),
+        "<< /Length 0 >>\nstream\n\nendstream".to_string(),
+        "<< /Length 0 >>\nstream\n\nendstream".to_string(),
+    ];
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::with_capacity(objects.len());
+    for (index, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes());
+    pdf
+}
+
+#[test]
+fn smart_pdf_selections_with_shared_contents_are_embedded_independently() {
+    use photocraft_doc::{PdfBox, PdfImportMode, PdfImportOptions, SmartObject, SmartSource};
+    use photocraft_geom::Affine;
+
+    let source = std::sync::Arc::new(two_page_pdf());
+    let pdf_smart = |page| {
+        let mut smart = SmartObject::new(SmartSource::Embedded { file_name: "two-pages.pdf".into(), bytes: source.clone() }, Affine::IDENTITY, None);
+        smart.pdf_import = Some(PdfImportOptions { mode: PdfImportMode::Render, page, dpi: 72.0, crop_box: PdfBox::Media });
+        smart
+    };
+    let first = pdf_smart(1);
+    let mut second = pdf_smart(2);
+    second.contents_id = first.contents_id;
+    let mut doc = document(1, 1);
+    doc.layers.extend([Layer::new("First PDF page", LayerContent::Smart(first)), Layer::new("Second PDF page", LayerContent::Smart(second))]);
+
+    let bytes = document_to_psd(&doc).to_bytes().unwrap();
+    let back = crate::import("selected-pages.psd", &bytes).unwrap().document;
+    let sizes: Vec<_> = back
+        .layers
+        .iter()
+        .map(|layer| {
+            let LayerContent::Smart(smart) = &layer.content else { panic!("smart object") };
+            let photocraft_doc::SmartSource::Linked { path } = &smart.source else { panic!("linked PSB") };
+            let source = crate::linked::find_linked_file(&back.metadata, path).expect("embedded PSB");
+            assert!(source.file_name.ends_with(".psb"), "{}", source.file_name);
+            let selected = crate::import(&source.file_name, &source.bytes).unwrap().document;
+            (selected.size.width, selected.size.height)
+        })
+        .collect();
+    assert_eq!(sizes, [(10, 20), (30, 40)]);
+}
+
 /// Photoshop opens a PSD's bottom layer as its Background only when that layer has no
 /// transparency channel (measured on Photoshop 27.11: with the channel written, re-exported
 /// files reopened with the Background as an ordinary layer).

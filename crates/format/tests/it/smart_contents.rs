@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use photocraft_color::{ColorMode, SampleType};
-use photocraft_doc::{Document, Layer, LayerContent, LayerId, Size, SmartContentsId, SmartObject, SmartSource};
+use photocraft_doc::{Document, Layer, LayerContent, LayerId, PdfBox, PdfImportMode, PdfImportOptions, Size, SmartContentsId, SmartObject, SmartSource};
 use photocraft_format::{LoadOptions, SaveOptions, load_from_bytes, load_from_bytes_with, save_to_bytes, zip};
 use photocraft_geom::Affine;
 
@@ -100,6 +100,39 @@ fn legacy_smart_contents_are_independent_except_for_nonempty_linked_paths() {
     assert_ne!(ids[6], ids[7], "an empty path identifies no shared source");
     // Allocated legacy identities become explicit on the next save.
     assert_eq!(load_from_bytes(&save_to_bytes(&back, &SaveOptions::default()).unwrap()).unwrap(), back);
+}
+
+#[test]
+fn smart_pdf_import_selection_roundtrips_and_defaults_when_absent() {
+    let selection = PdfImportOptions { mode: PdfImportMode::Layers, page: 7, dpi: 144.0, crop_box: PdfBox::Media };
+    let mut doc = Document::new("PDF selections", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+    for (name, source) in [
+        ("embedded", SmartSource::Embedded { file_name: "embedded.pdf".into(), bytes: Arc::new(vec![1, 2, 3]) }),
+        ("linked", SmartSource::Linked { path: "/tmp/linked.pdf".into() }),
+    ] {
+        let mut smart = SmartObject::new(source, Affine::IDENTITY, None);
+        smart.pdf_import = Some(selection);
+        doc.layers.push(Layer::new(name, LayerContent::Smart(smart)));
+    }
+
+    let bytes = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
+    let back = load_from_bytes(&bytes).unwrap();
+    assert_eq!(back, doc);
+    for layer in &back.layers {
+        let LayerContent::Smart(smart) = &layer.content else { panic!("smart object") };
+        assert_eq!(smart.pdf_import, Some(selection));
+    }
+
+    let legacy = rewrite_manifest(&bytes, |m| {
+        for layer in m["document"]["layers"].as_array_mut().unwrap() {
+            layer["content"].as_object_mut().unwrap().remove("pdf_import");
+        }
+    });
+    let back = load_from_bytes(&legacy).unwrap();
+    for layer in &back.layers {
+        let LayerContent::Smart(smart) = &layer.content else { panic!("smart object") };
+        assert_eq!(smart.pdf_import, None);
+    }
 }
 
 #[test]

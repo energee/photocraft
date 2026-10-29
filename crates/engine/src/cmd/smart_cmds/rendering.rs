@@ -7,14 +7,24 @@ use super::{
 
 /// Layer › Smart Objects › Stack Mode: the source's layers (or, when it holds a single group, the
 /// group's layers) combined per pixel with `mode`. Cached like [`source_image`], keyed by mode.
-pub fn stack_image(file_name: &str, bytes: &[u8], fmt: PixelFormat, mode: photocraft_doc::StackMode) -> Result<SourceImage> {
+pub fn stack_image(
+    file_name: &str,
+    bytes: &[u8],
+    fmt: PixelFormat,
+    mode: photocraft_doc::StackMode,
+    pdf_import: Option<photocraft_doc::PdfImportOptions>,
+) -> Result<SourceImage> {
     use photocraft_algo::stack::Stat;
-    let mut key = cache_key(bytes, fmt);
-    key.0 = *blake3::hash(&[&key.0[..], b"stack:", mode.id().as_bytes()].concat()).as_bytes();
+    let mut key = cache_key(bytes, fmt, pdf_import);
+    let mut hash = blake3::Hasher::new();
+    hash.update(&key.0);
+    hash.update(b"stack:");
+    hash.update(mode.id().as_bytes());
+    key.0 = *hash.finalize().as_bytes();
     if let Some(img) = cache_get(&key) {
         return Ok(img);
     }
-    let doc = decode_source(file_name, bytes)?;
+    let doc = decode_source(file_name, bytes, pdf_import)?;
     let layers: &[Layer] = match doc.layers.as_slice() {
         [only] if only.is_group() => only.children().unwrap_or_default(),
         all => all,
@@ -173,8 +183,8 @@ pub(super) fn place(name: &str, bytes: &[u8], fmt: PixelFormat, sm: &SmartObject
         });
     }
     let img = match sm.stack_mode {
-        Some(mode) => stack_image(name, bytes, fmt, mode)?,
-        None => source_image(name, bytes, fmt)?,
+        Some(mode) => stack_image(name, bytes, fmt, mode, sm.pdf_import)?,
+        None => source_image(name, bytes, fmt, sm.pdf_import)?,
     };
     // Through the warp (source space) and the transform in one pass; whole-pixel moves are exact.
     Ok(match &sm.perspective {
@@ -189,8 +199,8 @@ pub(crate) fn source_box(doc: &Document, sm: &SmartObject) -> Option<[f64; 4]> {
     let (name, bytes) = source_bytes(&doc.metadata, &sm.source)?;
     let fmt = doc.pixel_format();
     let img = match sm.stack_mode {
-        Some(mode) => stack_image(&name, &bytes, fmt, mode),
-        None => source_image(&name, &bytes, fmt),
+        Some(mode) => stack_image(&name, &bytes, fmt, mode, sm.pdf_import),
+        None => source_image(&name, &bytes, fmt, sm.pdf_import),
     }
     .ok()?;
     let r = img.bounds;

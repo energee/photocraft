@@ -195,6 +195,7 @@ pub fn rich_doc(mode: ColorMode, depth: SampleType) -> Document {
             }),
             warp: Some(photocraft_geom::warp::Warp::custom(photocraft_geom::warp::BezierMesh::identity([0.0, 0.0, 48.0, 24.0], 2, 1), [0.0, 0.0, 48.0, 24.0])),
             stack_mode: Some(photocraft_doc::StackMode::Median),
+            pdf_import: None,
             // Distort / Perspective placement, so the round trip covers it.
             perspective: Some([1.0, 0.1, 2.0, 0.05, 1.0, 3.0, 0.001, 0.0005, 1.0]),
         }),
@@ -212,6 +213,7 @@ pub fn rich_doc(mode: ColorMode, depth: SampleType) -> Document {
             filter_mask: None,
             warp: None,
             stack_mode: None,
+            pdf_import: None,
             perspective: None,
         }),
     );

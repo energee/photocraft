@@ -15,6 +15,7 @@ use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, Tar
 use hayro::{RenderCache, RenderSettings, render_into};
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent};
+use photocraft_doc::{PdfBox, PdfImportOptions};
 use photocraft_geom::{Rect, Size};
 use photocraft_raster::{Interrupt, Surface};
 
@@ -29,47 +30,6 @@ const MAX_SIDE: u32 = 16_384;
 const MAX_PIXELS: u64 = 64 << 20;
 const MIN_DPI: f64 = 1.0;
 const MAX_DPI: f64 = 2_400.0;
-
-/// Controls the ordinary raster fallback for a PDF import.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum PdfImportMode {
-    /// Prefer Photoshop layer data; rasterise only when that data is absent.
-    #[default]
-    Auto,
-    /// Require Photoshop layer data and report an error when it is absent.
-    Layers,
-    /// Always rasterise the selected page.
-    Render,
-}
-
-/// The PDF page box used as the raster canvas.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum PdfBox {
-    /// The page's display crop, as PDF viewers normally show it.
-    #[default]
-    Crop,
-    /// The full physical media page.
-    Media,
-}
-
-/// Options shared by Photoshop-layer import and ordinary page rasterisation.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PdfImportOptions {
-    /// Whether to require preserved Photoshop layers or rasterise the page.
-    pub mode: PdfImportMode,
-    /// One-based page number.
-    pub page: u32,
-    /// Raster resolution in pixels per inch.
-    pub dpi: f64,
-    /// Page box used for raster dimensions and clipping.
-    pub crop_box: PdfBox,
-}
-
-impl Default for PdfImportOptions {
-    fn default() -> Self {
-        Self { mode: PdfImportMode::Auto, page: 1, dpi: 300.0, crop_box: PdfBox::Crop }
-    }
-}
 
 /// Render one PDF page as a single, opaque sRGB background layer.
 ///
@@ -131,6 +91,7 @@ pub(crate) fn import(name: &str, bytes: &[u8], options: &PdfImportOptions, ctl: 
     })
 }
 
+/// Reject invalid page numbers/resolutions and source sizes before parsing or allocating a canvas.
 fn validate_options(bytes: &[u8], options: &PdfImportOptions) -> Result<(), IoError> {
     if bytes.len() > MAX_PDF_BYTES {
         return Err(IoError::Pdf(format!("PDF is {} MiB, above the {} MiB import limit", bytes.len() >> 20, MAX_PDF_BYTES >> 20)));
@@ -144,6 +105,7 @@ fn validate_options(bytes: &[u8], options: &PdfImportOptions) -> Result<(), IoEr
     Ok(())
 }
 
+/// Derive the rotated page canvas and source transform, rejecting oversized pixel allocations.
 fn render_geometry(page: &hayro::hayro_syntax::page::Page<'_>, options: &PdfImportOptions) -> Result<(u16, u16, Affine), IoError> {
     let (page_width, page_height) = box_dimensions(page.intersected_crop_box(), "page box")?;
     let (page_width, page_height) = match page.rotation() {
@@ -164,6 +126,7 @@ fn render_geometry(page: &hayro::hayro_syntax::page::Page<'_>, options: &PdfImpo
     Ok((width, height, transform))
 }
 
+/// Round a physical page extent outward without introducing a row at exact DPI boundaries.
 fn scaled_dimension(points: f64, dpi: f64, axis: &str) -> Result<u16, IoError> {
     // Multiply before dividing: 960 * (300 / 72) rounds above 4000 and adds a spurious row.
     let pixels = (points * dpi / 72.0).ceil();
@@ -174,6 +137,8 @@ fn scaled_dimension(points: f64, dpi: f64, axis: &str) -> Result<u16, IoError> {
     Ok(pixels as u16)
 }
 
+/// Prepare an owned parser buffer; MediaBox rewrites only the selected page in a transient PDF.
+/// Hayro otherwise clips drawing to CropBox even when a larger destination is allocated.
 fn page_data(bytes: &[u8], options: &PdfImportOptions) -> Result<Vec<u8>, IoError> {
     if options.crop_box == PdfBox::Crop {
         return Ok(bytes.to_vec());
@@ -190,6 +155,7 @@ fn page_data(bytes: &[u8], options: &PdfImportOptions) -> Result<Vec<u8>, IoErro
     Ok(data)
 }
 
+/// Resolve inherited MediaBox data with bounded parent traversal, including cyclic page trees.
 fn inherited_media_box(pdf: &lopdf::Document, mut page: lopdf::ObjectId) -> Result<lopdf::Object, IoError> {
     for _ in 0..128 {
         let dict = pdf.get_dictionary(page).map_err(|error| IoError::Pdf(format!("invalid page tree: {error}")))?;
@@ -201,6 +167,7 @@ fn inherited_media_box(pdf: &lopdf::Document, mut page: lopdf::ObjectId) -> Resu
     Err(IoError::Pdf("page tree is cyclic or exceeds 128 levels".into()))
 }
 
+/// Validate finite positive page geometry before pixel arithmetic or renderer transforms.
 fn box_dimensions(box_: hayro::hayro_syntax::object::Rect, label: &str) -> Result<(f64, f64), IoError> {
     let (width, height) = (box_.width(), box_.height());
     if !box_.x0.is_finite()

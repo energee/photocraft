@@ -9,13 +9,14 @@ use crate::state::DialogKind;
 
 const MARK: &str = "__pdfImport";
 
-/// A PDF waiting for the user to choose its rasterization settings.
+/// A PDF source owned until its import dialog is confirmed or cancelled.
 pub(crate) enum Source {
     Bytes(Arc<Vec<u8>>),
     #[cfg(not(target_arch = "wasm32"))]
     Path(String),
 }
 
+/// Runtime source ownership is separate from serializable dialog fields; ids bind them together.
 pub(crate) struct Pending {
     pub name: String,
     pub path: Option<String>,
@@ -41,6 +42,7 @@ pub(crate) fn open(app: &mut PhotocraftApp, pending: Pending) -> u64 {
     app.pdf_import.push((id, pending));
     id
 }
+/// Draw mode/page/box/resolution controls; only raster fallback uses the latter two settings.
 pub fn body(ui: &mut egui::Ui, fields: &mut Map<String, Value>) {
     let mut mode = fields.get("mode").and_then(Value::as_str).filter(|v| matches!(*v, "auto" | "layers" | "render")).unwrap_or("auto").to_string();
     let mut page = fields.get("page").and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok()).filter(|v| *v > 0).unwrap_or(1);
@@ -83,6 +85,7 @@ pub fn body(ui: &mut egui::Ui, fields: &mut Map<String, Value>) {
     fields.insert("box".into(), json!(crop_box));
 }
 
+/// Validate dialog/control values through the same parser as Open As before starting a job.
 fn options(app: &PhotocraftApp, fields: &Map<String, Value>) -> Result<photocraft_io::ImportOptions, String> {
     let pdf = json!({
         "mode": fields.get("mode").cloned().unwrap_or_else(|| json!("auto")),
@@ -94,11 +97,13 @@ fn options(app: &PhotocraftApp, fields: &Map<String, Value>) -> Result<photocraf
         .map_err(|error| error.to_string())
 }
 
+/// Consume the matching source before validation: the generic dialog has already closed.
+/// Any error must release these PDF bytes rather than leave an unreachable pending import.
 pub fn confirm(app: &mut PhotocraftApp, fields: &Map<String, Value>) -> Result<Value, String> {
-    let opts = options(app, fields)?;
     let id = fields.get(MARK).and_then(Value::as_u64).ok_or("no PDF import is pending")?;
     let pending =
         app.pdf_import.iter().position(|(pending_id, _)| *pending_id == id).map(|i| app.pdf_import.swap_remove(i).1).ok_or("no PDF import is pending")?;
+    let opts = options(app, fields)?;
     match pending.source {
         Source::Bytes(bytes) => {
             crate::jobs_ui::start_open_with_options(app, &pending.name, pending.path, photocraft_engine::jobs::OpenSource::Bytes(bytes), opts)?
@@ -109,6 +114,7 @@ pub fn confirm(app: &mut PhotocraftApp, fields: &Map<String, Value>) -> Result<V
     Ok(app.jobs.last_started.map_or(Value::Null, |job| json!({"job": job.0, "pending": true})))
 }
 
+/// Release only this dialog's pending source, leaving other queued PDF imports intact.
 pub fn cancel(app: &mut PhotocraftApp, fields: &Map<String, Value>) {
     if let Some(id) = fields.get(MARK).and_then(Value::as_u64)
         && let Some(i) = app.pdf_import.iter().position(|(pending_id, _)| *pending_id == id)
@@ -152,6 +158,35 @@ mod tests {
         assert!(st.source_read_only);
         assert!(st.path.is_none());
         assert!(app.pdf_import.is_empty());
+    }
+
+    #[test]
+    fn invalid_options_discard_the_closed_dialogs_pdf_source_only() {
+        for (field, value) in [("page", json!(0)), ("dpi", json!(0))] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+            let bytes = pdf();
+            let source = Arc::downgrade(&bytes);
+            let id = open(&mut app, Pending { name: "invalid.pdf".into(), path: None, source: Source::Bytes(Arc::clone(&bytes)) });
+            drop(bytes);
+            let other_bytes = pdf();
+            let other_source = Arc::downgrade(&other_bytes);
+            let other = open(&mut app, Pending { name: "other.pdf".into(), path: None, source: Source::Bytes(other_bytes) });
+            app.ui.dialog_mut(id).unwrap().fields.insert(field.into(), value);
+
+            let error = crate::dialogs::confirm(&mut app, id).unwrap_err();
+
+            assert!(error.contains("pdf."), "{field}: {error}");
+            assert!(app.ui.dialog_mut(id).is_none(), "{field}: the invalid dialog remained open");
+            assert!(source.upgrade().is_none(), "{field}: the closed dialog retained its PDF source");
+            assert_eq!(
+                app.pdf_import.iter().map(|(pending_id, _)| *pending_id).collect::<Vec<_>>(),
+                [other],
+                "{field}: an unrelated pending source was removed"
+            );
+            assert!(other_source.upgrade().is_some(), "{field}: the unrelated source was released");
+            crate::dialogs::cancel(&mut app, other).unwrap();
+            assert!(other_source.upgrade().is_none(), "{field}: cancelling the remaining dialog retained its source");
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

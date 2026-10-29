@@ -23,14 +23,30 @@ use crate::{ImportOptions, ImportResult, IoError, PdfImportMode};
 const MAX_PRIVATE_BYTES: usize = 512 << 20;
 const MAX_PDF_BYTES: usize = 512 << 20;
 
+/// Outcome of probing one PDF page for Photoshop's private layer section.
+///
+/// [`Self::Absent`] is deliberately narrow: it means the page has no
+/// Photoshop preservation entry. Every other failure is terminal in
+/// [`PdfImportMode::Auto`], so an unreadable or damaged private section is not
+/// silently replaced with a raster image.
 #[derive(Debug)]
 enum LayeredPdfError {
+    /// The page has no Photoshop preservation entry.
     Absent,
+    /// The PDF itself cannot be read, its input/page selection is invalid, or
+    /// a PDF or Photoshop-private stream exceeds an import limit.
+    Pdf(String),
     Cancelled,
+    /// Photoshop preservation metadata was present but is invalid or
+    /// unsupported.
     Corrupt(String),
 }
 
 impl LayeredPdfError {
+    fn pdf(message: impl Into<String>) -> Self {
+        Self::Pdf(message.into())
+    }
+
     fn corrupt(message: impl Into<String>) -> Self {
         Self::Corrupt(message.into())
     }
@@ -38,6 +54,7 @@ impl LayeredPdfError {
     fn into_io(self) -> IoError {
         match self {
             Self::Absent => IoError::Pdf("this PDF has no Photoshop editable layer data; choose PDF render mode".into()),
+            Self::Pdf(message) => IoError::Pdf(message),
             Self::Cancelled => IoError::Cancelled,
             Self::Corrupt(message) => IoError::Pdf(format!(
                 "the Photoshop editable layer data in this PDF is corrupt or unsupported ({message}); choose PDF render mode to open its page appearance"
@@ -53,6 +70,12 @@ pub(crate) fn is_pdf(bytes: &[u8]) -> bool {
 }
 
 /// Imports a PDF according to its Photoshop-layer and page-rendering mode.
+///
+/// [`PdfImportMode::Auto`] rasterises only when the selected page demonstrably
+/// lacks Photoshop preservation metadata. [`PdfImportMode::Layers`] reports
+/// that absence, while [`PdfImportMode::Render`] always delegates directly to
+/// the page renderer. Invalid PDF input, invalid page selections, source-size
+/// limits, and malformed preserved data are errors in Auto and Layers modes.
 pub(crate) fn import(name: &str, bytes: &[u8], options: &ImportOptions, ctl: &Interrupt) -> Result<ImportResult, IoError> {
     match options.pdf.mode {
         PdfImportMode::Render => crate::pdf_render::import(name, bytes, &options.pdf, ctl),
@@ -129,19 +152,32 @@ fn layered_file(bytes: &[u8], page: u32, ctl: &Interrupt) -> Result<(photocraft_
     Ok((document, warnings))
 }
 
+/// Parses a PDF after [`load_page`] has applied the source-size and page
+/// selection invariants.
 fn load_pdf(bytes: &[u8]) -> Result<Document, LayeredPdfError> {
-    if bytes.len() > MAX_PDF_BYTES {
-        return Err(LayeredPdfError::corrupt(format!("PDF is larger than the {} MiB import limit", MAX_PDF_BYTES >> 20)));
-    }
-    Document::load_mem(bytes).map_err(|error| LayeredPdfError::corrupt(format!("could not parse PDF: {error}")))
+    Document::load_mem(bytes).map_err(|error| LayeredPdfError::pdf(format!("could not parse PDF: {error}")))
 }
 
+/// Validates the input size without inspecting the bytes, keeping the hard
+/// allocation boundary testable without constructing a huge PDF.
+fn validate_pdf_size_len(len: usize) -> Result<(), LayeredPdfError> {
+    if len > MAX_PDF_BYTES {
+        return Err(LayeredPdfError::pdf(format!("PDF is larger than the {} MiB import limit", MAX_PDF_BYTES >> 20)));
+    }
+    Ok(())
+}
+
+/// Loads a selected page only after bounding the source and rejecting page
+/// zero.  This order makes oversized input terminal even when its page option
+/// is invalid, and keeps parser failures distinct from private-data failures.
 fn load_page(bytes: &[u8], page: u32) -> Result<(Document, lopdf::ObjectId), LayeredPdfError> {
+    validate_pdf_size_len(bytes.len())?;
     if page == 0 {
-        return Err(LayeredPdfError::corrupt("page numbers start at 1"));
+        return Err(LayeredPdfError::pdf("PDF page numbers start at 1"));
     }
     let pdf = load_pdf(bytes)?;
-    let page = pdf.get_pages().get(&page).copied().ok_or_else(|| LayeredPdfError::corrupt(format!("page {page} does not exist")))?;
+    let pages = pdf.get_pages();
+    let page = pages.get(&page).copied().ok_or_else(|| LayeredPdfError::pdf(format!("PDF has {} page(s); page {page} was requested", pages.len())))?;
     Ok((pdf, page))
 }
 
@@ -157,8 +193,11 @@ fn validate_layer_block(data: &[u8]) -> Result<(), LayeredPdfError> {
     }
     let declared = usize::try_from(u32::from_be_bytes([header[8], header[9], header[10], header[11]]))
         .map_err(|_| LayeredPdfError::corrupt("layer block length is out of range"))?;
-    if declared > MAX_PRIVATE_BYTES || declared > data.len().saturating_sub(12) {
-        return Err(LayeredPdfError::corrupt("StandardImageFileData declares a layer block outside the import limit or stream bounds"));
+    if declared > MAX_PRIVATE_BYTES {
+        return Err(LayeredPdfError::pdf("StandardImageFileData layer block exceeds the import limit"));
+    }
+    if declared > data.len().saturating_sub(12) {
+        return Err(LayeredPdfError::corrupt("StandardImageFileData declares a layer block outside its stream bounds"));
     }
     Ok(())
 }
@@ -193,9 +232,13 @@ fn private_stream<'a>(pdf: &'a Document, private: &'a Dictionary, key: &[u8]) ->
         .map_err(|error| LayeredPdfError::corrupt(format!("{key:?} is not a stream: {error}")))
 }
 
+/// Decodes only the PDF stream encodings Photoshop emits for private data.
+///
+/// The compressed and decoded forms are both capped; callers receive a plain
+/// PDF limit error before a byte slice reaches a Photoshop parser.
 fn decode_private_stream(stream: &Stream, label: &str) -> Result<Vec<u8>, LayeredPdfError> {
     if stream.content.len() > MAX_PRIVATE_BYTES {
-        return Err(LayeredPdfError::corrupt(format!("{label} compressed data exceeds the {} MiB limit", MAX_PRIVATE_BYTES >> 20)));
+        return Err(LayeredPdfError::pdf(format!("{label} compressed data exceeds the {} MiB import limit", MAX_PRIVATE_BYTES >> 20)));
     }
     if stream.dict.get(b"Filter").is_err() {
         return bounded_copy(&stream.content, label);
@@ -210,19 +253,21 @@ fn decode_private_stream(stream: &Stream, label: &str) -> Result<Vec<u8>, Layere
 
 fn bounded_copy(data: &[u8], label: &str) -> Result<Vec<u8>, LayeredPdfError> {
     if data.len() > MAX_PRIVATE_BYTES {
-        return Err(LayeredPdfError::corrupt(format!("{label} exceeds the {} MiB limit", MAX_PRIVATE_BYTES >> 20)));
+        return Err(LayeredPdfError::pdf(format!("{label} exceeds the {} MiB import limit", MAX_PRIVATE_BYTES >> 20)));
     }
     Ok(data.to_vec())
 }
 
+/// Inflates at most one byte beyond the private-data limit, so reaching the
+/// cap proves the stream is oversized without retaining an unbounded result.
 fn inflate_bounded(data: &[u8], label: &str) -> Result<Vec<u8>, LayeredPdfError> {
     let mut decoder = ZlibDecoder::new(data);
     let mut decoded = Vec::new();
-    decoded.try_reserve(data.len().min(MAX_PRIVATE_BYTES)).map_err(|_| LayeredPdfError::corrupt(format!("not enough memory to decode {label}")))?;
+    decoded.try_reserve(data.len().min(MAX_PRIVATE_BYTES)).map_err(|_| LayeredPdfError::pdf(format!("not enough memory to decode {label}")))?;
     let mut limited = decoder.by_ref().take(u64::try_from(MAX_PRIVATE_BYTES.saturating_add(1)).unwrap_or(u64::MAX));
     limited.read_to_end(&mut decoded).map_err(|error| LayeredPdfError::corrupt(format!("could not inflate {label}: {error}")))?;
     if decoded.len() > MAX_PRIVATE_BYTES {
-        return Err(LayeredPdfError::corrupt(format!("{label} decoded data exceeds the {} MiB limit", MAX_PRIVATE_BYTES >> 20)));
+        return Err(LayeredPdfError::pdf(format!("{label} decoded data exceeds the {} MiB import limit", MAX_PRIVATE_BYTES >> 20)));
     }
     Ok(decoded)
 }
@@ -299,6 +344,24 @@ mod tests {
         out.extend_from_slice(b"\nendobj\n");
     }
 
+    fn ordinary_pdf() -> Vec<u8> {
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        object(&mut out, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
+        object(&mut out, &mut offsets, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        object(&mut out, &mut offsets, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R >>");
+        let content = "0 1 0 rg 0 0 1 1 re f";
+        object(&mut out, &mut offsets, format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()).as_bytes());
+        let size = offsets.len() + 1;
+        let xref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", offsets.len() + 1).as_bytes());
+        for offset in offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        out
+    }
+
     fn photoshop_pdf(layer_blocks: &[u8]) -> Vec<u8> {
         photoshop_pdf_with_depth(layer_blocks, 8)
     }
@@ -312,7 +375,11 @@ mod tests {
         let mut offsets = Vec::new();
         object(&mut out, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
         object(&mut out, &mut offsets, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
-        object(&mut out, &mut offsets, b"<< /Type /Page /Parent 2 0 R /PieceInfo << /AdobePhotoshop << /Private 4 0 R >> >> >>");
+        object(
+            &mut out,
+            &mut offsets,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 3 2] /Resources << >> /PieceInfo << /AdobePhotoshop << /Private 4 0 R >> >> >>",
+        );
         object(&mut out, &mut offsets, b"<< /StandardImageFileData 5 0 R /CompositeImage 6 0 R >>");
         let mut layers = format!("<< /Length {} >>\nstream\n", layer_blocks.len()).into_bytes();
         layers.extend_from_slice(layer_blocks);
@@ -389,9 +456,44 @@ mod tests {
     }
 
     #[test]
+    fn malformed_pdf_is_a_terminal_pdf_read_error() {
+        let error = layered_result("malformed.pdf", b"%PDF-not a document", 1, &Interrupt::NONE).unwrap_err();
+        assert!(matches!(error, LayeredPdfError::Pdf(_)), "{error:?}");
+    }
+
+    #[test]
+    fn invalid_page_selection_is_not_classified_as_corrupt_layer_data() {
+        let pdf = ordinary_pdf();
+        for page in [0, 2] {
+            let error = layered_result("flat.pdf", &pdf, page, &Interrupt::NONE).unwrap_err();
+            assert!(matches!(error, LayeredPdfError::Pdf(_)), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn absent_preserved_data_falls_back_to_rendering() {
+        let options = ImportOptions { pdf: crate::PdfImportOptions { dpi: 72.0, ..Default::default() }, ..Default::default() };
+        let imported = crate::import_with_options("flat.pdf", &ordinary_pdf(), &options).unwrap();
+        assert_eq!(imported.document.size, Size::new(1, 1));
+        assert_eq!(imported.document.layers[0].surface().unwrap().pixel(0, 0), [0.0, 1.0, 0.0, 1.0]);
+        assert!(imported.source_read_only);
+    }
+
+    #[test]
+    fn pdf_size_limit_is_a_plain_pdf_error_without_a_large_allocation() {
+        let error = validate_pdf_size_len(MAX_PDF_BYTES + 1).unwrap_err();
+        assert!(matches!(error, LayeredPdfError::Pdf(_)), "{error:?}");
+    }
+
+    #[test]
     fn corrupt_preserved_layers_do_not_silently_fall_back_to_rendering() {
         let pdf = photoshop_pdf(b"8BIMLr16\x00\x00\x00\x10");
-        let error = crate::import_with_options("damaged.pdf", &pdf, &ImportOptions::default()).unwrap_err();
-        assert!(error.to_string().contains("Photoshop editable layer data"), "{error}");
+        let error = layered_result("damaged.pdf", &pdf, 1, &Interrupt::NONE).unwrap_err();
+        assert!(matches!(error, LayeredPdfError::Corrupt(_)), "{error:?}");
+        assert!(crate::import_with_options("damaged.pdf", &pdf, &ImportOptions::default()).is_err());
+        let render = ImportOptions { pdf: crate::PdfImportOptions { mode: PdfImportMode::Render, dpi: 72.0, ..Default::default() }, ..Default::default() };
+        let imported = crate::import_with_options("damaged.pdf", &pdf, &render).unwrap();
+        assert_eq!(imported.document.size, Size::new(3, 2));
+        assert_eq!(imported.document.layers[0].surface().unwrap().pixel(0, 0), [1.0, 1.0, 1.0, 1.0]);
     }
 }

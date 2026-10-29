@@ -181,6 +181,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             }),
             warp: s.warp.clone(),
             stack_mode: s.stack_mode,
+            pdf_import: s.pdf_import,
             perspective: s.perspective,
         },
     };
@@ -487,33 +488,45 @@ impl Loader<'_> {
                 density: *density,
                 feather: *feather,
             }),
-            ContentM::Smart { contents_id, source, transform, smart_filters, cache, psd_raw, filters_enabled, filter_mask, warp, stack_mode, perspective } => {
-                LayerContent::Smart(SmartObject {
-                    contents_id: self.contents_id(*contents_id, source),
-                    source: match source {
-                        SmartSourceM::Embedded { file_name, blob } => SmartSource::Embedded { file_name: file_name.clone(), bytes: self.fetch.blob(blob)? },
-                        SmartSourceM::Linked { path } => SmartSource::Linked { path: path.clone() },
-                    },
-                    transform: *transform,
-                    smart_filters: smart_filters.clone(),
-                    cache: self.opt_surface(cache)?,
-                    psd_raw: self.opt_blob(psd_raw)?,
-                    filters_enabled: *filters_enabled,
-                    filter_mask: match filter_mask {
-                        Some(mm) => Some(LayerMask {
-                            surface: self.surface(&mm.surface)?,
-                            enabled: mm.enabled,
-                            linked: mm.linked,
-                            density: mm.density,
-                            feather: mm.feather,
-                        }),
-                        None => None,
-                    },
-                    warp: warp.clone().filter(|w| w.mesh.as_ref().is_none_or(|m| m.is_valid())),
-                    stack_mode: *stack_mode,
-                    perspective: perspective.filter(|p| p.iter().all(|v| v.is_finite())),
-                })
-            }
+            ContentM::Smart {
+                contents_id,
+                source,
+                transform,
+                smart_filters,
+                cache,
+                psd_raw,
+                filters_enabled,
+                filter_mask,
+                warp,
+                stack_mode,
+                pdf_import,
+                perspective,
+            } => LayerContent::Smart(SmartObject {
+                contents_id: self.contents_id(*contents_id, source),
+                source: match source {
+                    SmartSourceM::Embedded { file_name, blob } => SmartSource::Embedded { file_name: file_name.clone(), bytes: self.fetch.blob(blob)? },
+                    SmartSourceM::Linked { path } => SmartSource::Linked { path: path.clone() },
+                },
+                transform: *transform,
+                smart_filters: smart_filters.clone(),
+                cache: self.opt_surface(cache)?,
+                psd_raw: self.opt_blob(psd_raw)?,
+                filters_enabled: *filters_enabled,
+                filter_mask: match filter_mask {
+                    Some(mm) => Some(LayerMask {
+                        surface: self.surface(&mm.surface)?,
+                        enabled: mm.enabled,
+                        linked: mm.linked,
+                        density: mm.density,
+                        feather: mm.feather,
+                    }),
+                    None => None,
+                },
+                warp: warp.clone().filter(|w| w.mesh.as_ref().is_none_or(|m| m.is_valid())),
+                stack_mode: *stack_mode,
+                pdf_import: *pdf_import,
+                perspective: perspective.filter(|p| p.iter().all(|v| v.is_finite())),
+            }),
         };
         let mask = match &m.mask {
             Some(mm) => {

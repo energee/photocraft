@@ -5,7 +5,12 @@ use super::{
 };
 
 pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
-    import_result(name, bytes).map(|r| r.document)
+    import_with_options(name, bytes, &Default::default())
+}
+
+/// Decode an auxiliary source with explicit import settings, rejecting preview-only imports.
+pub(crate) fn import_with_options(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<Document> {
+    import_result(name, bytes, opts).map(|r| r.document)
 }
 
 /// [`import`] for a file that becomes a document of its own (Revert, Load Files into Stack;
@@ -16,15 +21,15 @@ pub(crate) fn import_opened(s: &Session, name: &str, bytes: &[u8]) -> Result<Doc
 }
 
 pub(super) fn import_at_raw_ppi(raw_ppi: f64, name: &str, bytes: &[u8]) -> Result<Document> {
-    let r = import_result(name, bytes)?;
+    let r = import_result(name, bytes, &Default::default())?;
     let mut doc = r.document;
     raw_resolution(raw_ppi, &r.warnings, &mut doc);
     Ok(doc)
 }
 
-fn import_result(name: &str, bytes: &[u8]) -> Result<photocraft_io::ImportResult> {
+fn import_result(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<photocraft_io::ImportResult> {
     crate::allocation::checkpoint("importing document")?;
-    let r = photocraft_io::import(name, bytes).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
+    let r = photocraft_io::import_with_options(name, bytes, opts).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
     // Auxiliary imports return only a document and cannot surface the preview's fidelity warning.
     // Open has its own warning-preserving path; never silently place or process a thumbnail.
     if r.preview_only {
@@ -174,6 +179,8 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let fmt = d.doc.pixel_format();
     let vector = photocraft_io::svg::is_svg(&bytes);
     let opts = crate::jobs::pdf_import_options(crate::jobs::import_options(s.prefs()), p)?;
+    let pdf_import =
+        (bytes.starts_with(b"%PDF-") || std::path::Path::new(name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))).then_some(opts.pdf);
     let imported = photocraft_io::import_with_options(name, &bytes, &opts).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
     if imported.preview_only {
         return Err(EngineError::Other(format!(
@@ -211,6 +218,7 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let id = s.edit(label, |doc, active| {
         let layer = if smart {
             let mut so = SmartObject::new(source, Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, Some(px));
+            so.pdf_import = pdf_import;
             // A vector source (SVG) renders at its placement scale instead of as a resampled raster.
             if vector && let Some(sharp) = crate::smart_cmds::render(doc, &so)? {
                 so.cache = Some(sharp);

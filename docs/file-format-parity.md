@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-28 · **Last updated:** 2026-10-28 · **Change:** minor (Photoshop PDF preserved-layer import and ordinary PDF page rasterization; editable imports have no source Save path; percentages and estimates unchanged) · **Target:** Adobe Photoshop 2026
+> **Last reviewed:** 2026-10-28 · **Last updated:** 2026-10-28 · **Change:** minor (persistent PDF smart-object selections, same-file batch protection and explicit import errors; percentages and estimates unchanged) · **Target:** Adobe Photoshop 2026
 
 **PSD Filter Gallery (#8940, 2026-10-23):** Halftone Pattern maps its size, contrast and dot/circle/line pattern as editable settings on import and export, with the reference application's descriptor keys (`HlSz`, `Cntr`, `ScrT`: `ScrD`/`ScrC`/`ScrL`). PSD/PSB round trips pass at 8/16/32 bits. This does not claim pixel equivalence for the existing renderer. Unknown or malformed settings remain verbatim on import.
 
@@ -31,6 +31,10 @@ as opaque 8-bit sRGB. Encrypted PDFs and some blending/isolation/knockout constr
 unsupported; source spot channels, output intents and editable PDF objects are not preserved
 by rasterization. All PDF imports require Save As to avoid replacing their source with our
 flattened PDF export. PDF output remains one raster page; FILE-215-10 stays partial.
+Placed PDF selections persist through smart-object regeneration and native saves for embedded
+and linked sources. PSD export embeds the selected document as PSB. CLI batch refuses
+same-file PDF output even with `--in-place`, including hard-link aliases; explicit PDF exports
+to a different file remain available.
 
 ## Photoshop's formats
 
@@ -157,6 +161,7 @@ remaining gaps in #1606 stay tracked with per-sample corpus ceilings.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-28 | minor | PDF review corrections (#10034): selected page/mode/ppi/box retained through embedded/linked smart-object regeneration and native saves; selected contents embedded as PSB on PSD export; same-file CLI batch PDF overwrite refused; parser/page/size errors no longer imply corrupt Photoshop layers. |
 | 2026-10-28 | minor | Photoshop PDF editing blocks import as layers with their ICC profile; ordinary pages rasterize with page/ppi/CropBox/MediaBox options. Real CMYK/16 label opened and survived native save/reopen; source Save protection added. FILE-215-10 remains partial; percentages unchanged. |
 | 2026-10-24 | minor | Layered TIFF: the `LMsk` block in tag 37724 carries Photoshop's default global layer mask (14 bytes) instead of none; with an empty block Photoshop read only the composite (#9095). PSD output unchanged |
 | 2026-10-24 | minor | Layered TIFF writes the TySh text version and descriptor in PSD big-endian order while retaining container order for the block header, transform matrix, warp section and bounds (#9098); the mixed-order read path remains covered by #4758/#4771. |

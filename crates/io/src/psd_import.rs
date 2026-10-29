@@ -656,6 +656,7 @@ impl Ctx<'_> {
             filter_mask,
             warp,
             stack_mode: None,
+            pdf_import: None,
             perspective,
         })
     }

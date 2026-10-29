@@ -68,9 +68,11 @@ pub fn encode_source(doc: &Document) -> Result<Vec<u8>> {
     photocraft_format::save_to_bytes(doc, &Default::default()).map_err(|e| other(format!("can't encode smart object contents: {e}")))
 }
 
-/// Decodes smart-object contents (a `.pcraft` bundle, PSD/PSB, or any flat image format).
-pub fn decode_source(file_name: &str, bytes: &[u8]) -> Result<Document> {
-    crate::file_cmds::import(file_name, bytes).map_err(|e| other(format!("can't read smart object contents \"{file_name}\": {e}")))
+/// Decode smart-object contents using their persisted PDF selection, never a thumbnail preview.
+/// `None` selects the historical import defaults for older bundles and non-PDF sources.
+pub fn decode_source(file_name: &str, bytes: &[u8], pdf_import: Option<photocraft_doc::PdfImportOptions>) -> Result<Document> {
+    let options = photocraft_io::ImportOptions { pdf: pdf_import.unwrap_or_default(), ..Default::default() };
+    crate::file_cmds::import_with_options(file_name, bytes, &options).map_err(|e| other(format!("can't read smart object contents \"{file_name}\": {e}")))
 }
 
 fn base_name(path: &str) -> String {

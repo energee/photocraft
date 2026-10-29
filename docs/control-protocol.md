@@ -118,6 +118,15 @@ PDF imports have no source Save path: pass a new layered output path to `app.sav
 The native File › Open dialog exposes the same options. Confirming an ambient-path dialog
 through automation remains forbidden; use `app.open` under the configured read root instead.
 
+Engine `file.placeEmbedded` and `file.placeLinked` accept the same `pdf` object.
+The effective selection belongs to the smart object, not just its initial raster cache:
+page, mode, resolution and box survive refresh, transforms, Edit Contents and `.pcraft`
+save/reopen for both embedded and linked sources. PSD export embeds that selected document
+as a PSB rather than relying on a PDF consumer to choose the same page. Replacing edited
+contents with a native bundle clears the now-inapplicable PDF selection.
+Invalid pages, unreadable PDFs and size-limit errors are terminal, distinct from corrupt
+Photoshop editing data; Auto does not retry them as raster imports.
+
 ## Engine commands
 
 Change the UI language without restarting with `prefs.set`:

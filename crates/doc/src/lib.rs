@@ -503,12 +503,59 @@ fn normalize_runs<S: Clone>(text: &str, runs: Vec<(usize, S)>, base: S) -> Vec<(
     out
 }
 
+/// Controls the ordinary raster fallback for a PDF import.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PdfImportMode {
+    /// Prefer Photoshop layer data; rasterise only when that data is absent.
+    #[default]
+    Auto,
+    /// Require Photoshop layer data and report an error when it is absent.
+    Layers,
+    /// Always rasterise the selected page.
+    Render,
+}
+
+/// The PDF page box used as the raster canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PdfBox {
+    /// The page's display crop, as PDF viewers normally show it.
+    #[default]
+    Crop,
+    /// The full physical media page.
+    Media,
+}
+
+/// Options shared by Photoshop-layer import and ordinary page rasterisation.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PdfImportOptions {
+    /// Whether to require preserved Photoshop layers or rasterise the page.
+    pub mode: PdfImportMode,
+    /// One-based page number.
+    pub page: u32,
+    /// Raster resolution in pixels per inch.
+    pub dpi: f64,
+    /// Page box used for raster dimensions and clipping.
+    #[serde(rename = "box")]
+    pub crop_box: PdfBox,
+}
+
+impl Default for PdfImportOptions {
+    fn default() -> Self {
+        Self { mode: PdfImportMode::Auto, page: 1, dpi: 300.0, crop_box: PdfBox::Crop }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SmartObject {
     /// Ordinary layer duplicates share this identity; independent contents receive a fresh one.
     pub contents_id: SmartContentsId,
     /// Embedded source file bytes (PSD, PNG, …) or linked path.
     pub source: SmartSource,
+    /// PDF source selection used by every decode, including refresh and Edit Contents.
+    /// Both embedded and linked sources need it; native documents retain it on save.
+    pub pdf_import: Option<PdfImportOptions>,
     pub transform: Affine,
     pub smart_filters: Vec<SmartFilter>,
     /// Rendered appearance.
@@ -540,6 +587,7 @@ impl SmartObject {
         Self {
             contents_id: SmartContentsId::fresh(),
             source,
+            pdf_import: None,
             transform,
             smart_filters: Vec::new(),
             cache,

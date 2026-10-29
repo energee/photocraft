@@ -64,7 +64,7 @@ mod pcraft_cache;
 pub mod pdf;
 mod pdf_import;
 mod pdf_render;
-pub use pdf_render::{PdfBox, PdfImportMode, PdfImportOptions};
+pub use photocraft_doc::{PdfBox, PdfImportMode, PdfImportOptions};
 mod pdn;
 pub use pcraft_cache::PcraftExportCache;
 pub mod pixels;

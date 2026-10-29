@@ -1,5 +1,8 @@
 use super::{Document, Layer, LayerContent, SmartContentsId, Surface};
 
+/// Identity of a source conversion, including the persisted PDF page selection.
+pub(super) type ConvertedSourceKey = (SmartContentsId, [u8; 32], bool, Option<(u8, u32, u64, u8)>);
+
 /// An embedded smart-object source as written to `lnk2`.
 #[derive(Clone, Debug)]
 pub(super) struct Source {
@@ -31,9 +34,9 @@ pub(super) struct SmartOut {
     pub(super) prune_ok: bool,
     /// Files to embed.
     pub(super) add: Vec<crate::linked::LinkedFile>,
-    /// Sources converted so far, by contents identity, bytes and whether they were read from a
-    /// link (`Err` = can't be embedded).
-    pub(super) converted: std::collections::HashMap<(SmartContentsId, [u8; 32], bool), Result<Source, String>>,
+    /// Sources converted so far, by contents identity, bytes, linked-read status, and PDF import
+    /// selection (`Err` = can't be embedded).
+    pub(super) converted: std::collections::HashMap<ConvertedSourceKey, Result<Source, String>>,
     /// Each placed layer has its own id, even when it duplicates an imported layer.
     pub(super) placed_used: std::collections::HashSet<String>,
     /// Original instances reserve their imported placement regardless of layer order.
