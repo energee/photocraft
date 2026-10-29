@@ -38,7 +38,7 @@ output, AVIF read and JPEG XL remain gaps (G10). Remaining: 300–500 h includin
 | Portable Bit Map (PBM/PGM/PPM/PNM/PFM/PAM) | R/W | yes | yes | 8/16/32f |
 | FITS | R/W (FITS Liberator plug-in) | yes | yes | 8/16/32f gray or RGB, header cards kept; no fpack, no debayer |
 | Targa | R/W | yes | yes | 8-bit |
-| Photoshop PDF | R/W | yes: Auto preserves Photoshop editing data when present; Layers requires it; Render uses Import PDF's existing Pages/Images, Crop To, resolution, mode, depth and anti-aliasing choices (#2541, #6990) | yes, one flattened page (Save As / Save a Copy / CLI, #3401; also print and artboards-to-PDF) | Preserved layers retain authored depth and ICC; damaged editing data requires explicit Render. All PDF sources are read-only, including extracted images. No general editable PDF-object import, layered PDF export, multi-page save or presentation (FILE-215-10). Existing renderer differences remain: linear DeviceGray and MediaBox clipping at CropBox |
+| Photoshop PDF | R/W | yes: Auto preserves Photoshop editing data when present; Layers requires it; Render uses Import PDF's existing Pages/Images, Crop To, resolution, mode, depth and anti-aliasing choices (#2541, #6990) | yes, one flattened page (Save As / Save a Copy / CLI, #3401; also print and artboards-to-PDF) | Preserved layers retain authored depth and ICC; damaged editing data requires explicit Render. All PDF sources are read-only, including extracted images. A one-page PDF that is nothing but one image opens as that image, as Photoshop does, so Crop To, resolution, mode, depth and Render don't apply to it. No general editable PDF-object import, layered PDF export, multi-page save or presentation (FILE-215-10). Existing renderer differences remain: linear DeviceGray and MediaBox clipping at CropBox |
 | Photoshop EPS, DCS 1.0/2.0, EPS TIFF/PICT preview | R/W | no | no | |
 | Generic EPS / AI | R (rasterize) | no | no | |
 | SVG | R (rasterize) | yes, as editable shape layers or a vector smart object | no | Better than Photoshop for editing; gradients approximated (FILE-215-9) |
@@ -161,6 +161,7 @@ required an eager second parser and would weaken the bounded renderer architectu
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | patch | Documented the one-image PDF shortcut, which ignores Crop To, resolution, mode, depth and Render |
 | 2026-10-29 | minor | Photoshop-preserved PDF editing data, strict channel integrity, native/PSD smart projection persistence and PDF source protection consolidated onto #6990; renderer and existing limitations retained |
 | 2026-10-15 | minor | DDS textures save (#1327): uncompressed or BC1/BC2/BC3 (DXT1/3/5) from a clean-room block encoder, optional box-filtered mip chain, legacy header; DDS Options in Save As and Save a Copy, `ddsCompression`/`ddsMipmaps` for scripts, the CLI and MCP |
 | 2026-10-16 | minor | PSD smart filters: Perspective Warp (`perspectiveWarpTransform`: `vertices`, `warpedVertices`, `quads` of vertex indices, document pixels) opens as `layer.smartObjects.perspectiveWarp`, one plane per quad, and re-renders warped; save writes the original item with only the geometry rewritten, or a new one in Photoshop's layout; inconsistent descriptors stay verbatim (FILE-215-2, #6268) |

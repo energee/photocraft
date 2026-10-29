@@ -851,6 +851,14 @@ impl Session {
             self.journal.truncate(from);
         }
         if !crate::brush_cmds::coalesce_journal(self, id, &params) {
+            let mut params = params;
+            // A PDF password opens the file once; it is never kept in the journal or a recorded
+            // action, so replaying an open of a protected PDF needs the password again.
+            if matches!(id, "file.openAs" | "file.placeEmbedded" | "file.placeLinked")
+                && let Some(fields) = params.as_object_mut()
+            {
+                fields.remove("password");
+            }
             let params = match id {
                 _ if self.actions.recording.is_none() => params,
                 "layer.select" => crate::layer_multi_cmds::recorded_selection(self, params),
