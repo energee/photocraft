@@ -1,7 +1,8 @@
 use super::{Document, Layer, LayerContent, SmartContentsId, Surface};
 
-/// Identity of a source conversion, including the persisted PDF page selection.
-pub(super) type ConvertedSourceKey = (SmartContentsId, [u8; 32], bool, Option<(u8, u32, u64, u8)>);
+/// Identity of a source conversion, including the persisted PDF page selection (its `dpi` as
+/// `f64` bits, so the key is hashable).
+pub(super) type ConvertedSourceKey = (SmartContentsId, [u8; 32], bool, Option<(photocraft_doc::PdfImportMode, u32, u64, photocraft_doc::PdfBox)>);
 
 /// An embedded smart-object source as written to `lnk2`.
 #[derive(Clone, Debug)]

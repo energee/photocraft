@@ -30,14 +30,6 @@ pub(crate) use estimate::{fit_psd_size, psd_version, sign_global_blocks};
 pub(crate) use resources::{global_block, guides_resource, keep_imported_resource, legacy_name, pascal_names_resource, path_resources, unicode_names_resource};
 use smart::{LINK_KEYS, SmartOut, Source, contents_uuid, effects_unchanged, masked, size_from_layer, smart_keys, upsert};
 
-/// Encoded editable smart-object contents and the geometry needed by its placed-layer record.
-struct EncodedSmartDocument {
-    name: String,
-    data: Vec<u8>,
-    size: (f64, f64),
-    dpi: f64,
-}
-
 /// Blocks that define a layer's content as something other than pixels: fill (`SoCo`, `GdFl`,
 /// `PtFl`), placed / smart object (`SoLd`, `PlLd`, `SoLE`), type (`TySh`) and shape fill (`vscg`).
 /// A raster layer never writes them, nor adjustment blocks.
@@ -161,21 +153,6 @@ fn psd_background(doc: &Document) -> Option<photocraft_doc::LayerId> {
 /// How deep embedded documents are exported inside each other before a smart object is written
 /// as pixels instead.
 const MAX_NESTING: u32 = 8;
-
-fn pdf_selection_key(options: Option<&photocraft_doc::PdfImportOptions>) -> Option<(u8, u32, u64, u8)> {
-    options.map(|options| {
-        let mode = match options.mode {
-            photocraft_doc::PdfImportMode::Auto => 0,
-            photocraft_doc::PdfImportMode::Layers => 1,
-            photocraft_doc::PdfImportMode::Render => 2,
-        };
-        let crop_box = match options.crop_box {
-            photocraft_doc::PdfBox::Crop => 0,
-            photocraft_doc::PdfBox::Media => 1,
-        };
-        (mode, options.page, options.dpi.to_bits(), crop_box)
-    })
-}
 
 fn h_of(r: photocraft_geom::Rect) -> usize {
     r.height() as usize
@@ -935,7 +912,8 @@ impl Ex {
         linked: bool,
         pdf_import: Option<&photocraft_doc::PdfImportOptions>,
     ) -> Result<Source, String> {
-        let key = (contents_id, *blake3::hash(bytes).as_bytes(), linked, pdf_selection_key(pdf_import));
+        let pdf_key = pdf_import.map(|o| (o.mode, o.page, o.dpi.to_bits(), o.crop_box));
+        let key = (contents_id, *blake3::hash(bytes).as_bytes(), linked, pdf_key);
         if let Some(r) = self.smart.converted.get(&key) {
             return r.clone();
         }
@@ -952,15 +930,32 @@ impl Ex {
         linked: bool,
         pdf_import: Option<&photocraft_doc::PdfImportOptions>,
     ) -> Result<Source, String> {
-        let (name, data, size, dpi, nested) = if let Some(pdf_import) = pdf_import {
-            let options = crate::ImportOptions { pdf: *pdf_import, ..Default::default() };
-            let doc = crate::import_with_options(file_name, bytes, &options).map_err(|e| format!("its selected PDF page can't be read: {e}"))?.document;
-            let EncodedSmartDocument { name, data, size, dpi } = self.convert_document_source(file_name, &doc)?;
-            (name, data, size, dpi, Some(doc))
-        } else if photocraft_format::is_pcraft(bytes) {
-            let doc = photocraft_format::load_from_bytes(bytes).map_err(|e| format!("its contents can't be read: {e}"))?;
-            let EncodedSmartDocument { name, data, size, dpi } = self.convert_document_source(file_name, &doc)?;
-            (name, data, size, dpi, Some(doc))
+        // A selected PDF page or a `.pcraft` bundle is re-encoded as an editable PSB.
+        let decoded = match pdf_import {
+            Some(pdf_import) => {
+                let options = crate::ImportOptions { pdf: *pdf_import, ..Default::default() };
+                Some(crate::import_with_options(file_name, bytes, &options).map_err(|e| format!("its selected PDF page can't be read: {e}"))?.document)
+            }
+            None if photocraft_format::is_pcraft(bytes) => {
+                Some(photocraft_format::load_from_bytes(bytes).map_err(|e| format!("its contents can't be read: {e}"))?)
+            }
+            None => None,
+        };
+        let (name, data, size, dpi, nested) = if let Some(doc) = decoded {
+            if self.smart.depth >= MAX_NESTING {
+                return Err(format!("smart objects nest more than {MAX_NESTING} deep"));
+            }
+            let (file, warnings) = document_to_psd_nested(
+                &doc,
+                &PsdExportOptions { force_psb: true, document_path: self.document.clone(), read_linked_files: self.read_linked_files, ..Default::default() },
+                self.smart.depth + 1,
+                &Interrupt::NONE,
+            );
+            let data = file.to_bytes().map_err(|e| format!("its contents can't be written: {e}"))?;
+            let stem = file_name.rsplit_once('.').map_or(file_name, |(a, _)| a);
+            self.warnings.extend(warnings.into_iter().map(|w| format!("smart object {stem}: {w}")));
+            let size = (f64::from(doc.size.width), f64::from(doc.size.height));
+            (format!("{stem}.psb"), data, size, f64::from(doc.resolution_dpi), Some(doc))
         } else {
             // Embedded formats we can't decode (vector PDF/AI…) are kept; their size comes from the
             // layer. A linked file we can't decode is not embedded.
@@ -979,24 +974,6 @@ impl Ex {
             self.smart.add.push(crate::linked::LinkedFile { uuid: uuid.clone(), file_name: name, bytes: data });
         }
         Ok(Source { uuid, size, dpi })
-    }
-
-    /// Encode selected PDF or native contents as editable PSB, bounding nested smart objects.
-    fn convert_document_source(&mut self, file_name: &str, doc: &Document) -> Result<EncodedSmartDocument, String> {
-        if self.smart.depth >= MAX_NESTING {
-            return Err(format!("smart objects nest more than {MAX_NESTING} deep"));
-        }
-        let (file, warnings) = document_to_psd_nested(
-            doc,
-            &PsdExportOptions { force_psb: true, document_path: self.document.clone(), read_linked_files: self.read_linked_files, ..Default::default() },
-            self.smart.depth + 1,
-            &Interrupt::NONE,
-        );
-        let data = file.to_bytes().map_err(|e| format!("its contents can't be written: {e}"))?;
-        let stem = file_name.rsplit_once('.').map_or(file_name, |(a, _)| a);
-        self.warnings.extend(warnings.into_iter().map(|w| format!("smart object {stem}: {w}")));
-        let size = (f64::from(doc.size.width), f64::from(doc.size.height));
-        Ok(EncodedSmartDocument { name: format!("{stem}.psb"), data, size, dpi: f64::from(doc.resolution_dpi) })
     }
 
     /// Pixels for a fill layer: Photoshop's cached rendering while valid,

@@ -504,7 +504,7 @@ fn normalize_runs<S: Clone>(text: &str, runs: Vec<(usize, S)>, base: S) -> Vec<(
 }
 
 /// Controls the ordinary raster fallback for a PDF import.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PdfImportMode {
     /// Prefer Photoshop layer data; rasterise only when that data is absent.
@@ -517,7 +517,7 @@ pub enum PdfImportMode {
 }
 
 /// The PDF page box used as the raster canvas.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PdfBox {
     /// The page's display crop, as PDF viewers normally show it.

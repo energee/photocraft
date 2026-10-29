@@ -26,8 +26,9 @@ pub(super) fn set_source(
 ) -> Result<Value> {
     let id = layer_param(s, p)?;
     let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
-    let target_pdf_import = smart(doc, id)?.pdf_import;
-    let new = make(&doc.metadata, &smart(doc, id)?.source)?;
+    let sm = smart(doc, id)?;
+    let target_pdf_import = sm.pdf_import;
+    let new = make(&doc.metadata, &sm.source)?;
     set_shared_source(s, id, label, keep_psd, new, target_pdf_import)
 }
 
@@ -40,7 +41,7 @@ fn is_pdf_source(file_name: &str, bytes: &[u8]) -> bool {
 /// effective import settings before any sibling can be changed.
 fn validate_replacement(meta: &Metadata, source: &SmartSource, target_pdf_import: Option<photocraft_doc::PdfImportOptions>) -> Result<bool> {
     let Some((file_name, bytes)) = source_bytes(meta, source) else {
-        return Ok(matches!(source, SmartSource::Linked { path } if std::path::Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))));
+        return Ok(matches!(source, SmartSource::Linked { path } if is_pdf_source(path, &[])));
     };
     let is_pdf = is_pdf_source(&file_name, &bytes);
     let pdf_import = if is_pdf { target_pdf_import } else { None };

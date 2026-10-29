@@ -1,26 +1,20 @@
 //! PDF import options, held as an ordinary UI dialog so control clients can inspect and drive it.
 
-use std::sync::Arc;
-
 use serde_json::{Map, Value, json};
+
+use photocraft_engine::jobs::OpenSource;
 
 use crate::PhotocraftApp;
 use crate::state::DialogKind;
 
 const MARK: &str = "__pdfImport";
 
-/// A PDF source owned until its import dialog is confirmed or cancelled.
-pub(crate) enum Source {
-    Bytes(Arc<Vec<u8>>),
-    #[cfg(not(target_arch = "wasm32"))]
-    Path(String),
-}
-
 /// Runtime source ownership is separate from serializable dialog fields; ids bind them together.
+/// The source is owned until its import dialog is confirmed or cancelled.
 pub(crate) struct Pending {
     pub name: String,
     pub path: Option<String>,
-    pub source: Source,
+    pub source: OpenSource,
 }
 
 pub fn owns(fields: &Map<String, Value>) -> bool {
@@ -87,12 +81,8 @@ pub fn body(ui: &mut egui::Ui, fields: &mut Map<String, Value>) {
 
 /// Validate dialog/control values through the same parser as Open As before starting a job.
 fn options(app: &PhotocraftApp, fields: &Map<String, Value>) -> Result<photocraft_io::ImportOptions, String> {
-    let pdf = json!({
-        "mode": fields.get("mode").cloned().unwrap_or_else(|| json!("auto")),
-        "page": fields.get("page").cloned().unwrap_or_else(|| json!(1)),
-        "dpi": fields.get("dpi").cloned().unwrap_or_else(|| json!(300.0)),
-        "box": fields.get("box").cloned().unwrap_or_else(|| json!("crop")),
-    });
+    // Absent keys keep the `PdfImportOptions` defaults.
+    let pdf: Map<String, Value> = ["mode", "page", "dpi", "box"].into_iter().filter_map(|key| Some((key.to_string(), fields.get(key)?.clone()))).collect();
     photocraft_engine::jobs::pdf_import_options(photocraft_engine::jobs::import_options(app.session.prefs()), &json!({"pdf": pdf}))
         .map_err(|error| error.to_string())
 }
@@ -104,13 +94,7 @@ pub fn confirm(app: &mut PhotocraftApp, fields: &Map<String, Value>) -> Result<V
     let pending =
         app.pdf_import.iter().position(|(pending_id, _)| *pending_id == id).map(|i| app.pdf_import.swap_remove(i).1).ok_or("no PDF import is pending")?;
     let opts = options(app, fields)?;
-    match pending.source {
-        Source::Bytes(bytes) => {
-            crate::jobs_ui::start_open_with_options(app, &pending.name, pending.path, photocraft_engine::jobs::OpenSource::Bytes(bytes), opts)?
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        Source::Path(path) => crate::jobs_ui::start_open_with_options(app, &pending.name, pending.path, photocraft_engine::jobs::OpenSource::Path(path), opts)?,
-    }
+    crate::jobs_ui::start_open_with_options(app, &pending.name, pending.path, pending.source, opts)?;
     Ok(app.jobs.last_started.map_or(Value::Null, |job| json!({"job": job.0, "pending": true})))
 }
 
@@ -127,6 +111,8 @@ pub fn cancel(app: &mut PhotocraftApp, fields: &Map<String, Value>) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     fn pdf() -> Arc<Vec<u8>> {
@@ -141,8 +127,8 @@ mod tests {
     fn cancelling_one_pdf_does_not_replace_another_pending_source() {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
         let bytes = pdf();
-        let first = open(&mut app, Pending { name: "first.pdf".into(), path: None, source: Source::Bytes(Arc::clone(&bytes)) });
-        let second = open(&mut app, Pending { name: "second.pdf".into(), path: Some("second.pdf".into()), source: Source::Bytes(bytes) });
+        let first = open(&mut app, Pending { name: "first.pdf".into(), path: None, source: OpenSource::Bytes(Arc::clone(&bytes)) });
+        let second = open(&mut app, Pending { name: "second.pdf".into(), path: Some("second.pdf".into()), source: OpenSource::Bytes(bytes) });
         crate::dialogs::cancel(&mut app, first).unwrap();
         assert!(app.session.documents().is_empty());
         let dialog = app.ui.dialog_mut(second).unwrap();
@@ -166,11 +152,11 @@ mod tests {
             let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
             let bytes = pdf();
             let source = Arc::downgrade(&bytes);
-            let id = open(&mut app, Pending { name: "invalid.pdf".into(), path: None, source: Source::Bytes(Arc::clone(&bytes)) });
+            let id = open(&mut app, Pending { name: "invalid.pdf".into(), path: None, source: OpenSource::Bytes(Arc::clone(&bytes)) });
             drop(bytes);
             let other_bytes = pdf();
             let other_source = Arc::downgrade(&other_bytes);
-            let other = open(&mut app, Pending { name: "other.pdf".into(), path: None, source: Source::Bytes(other_bytes) });
+            let other = open(&mut app, Pending { name: "other.pdf".into(), path: None, source: OpenSource::Bytes(other_bytes) });
             app.ui.dialog_mut(id).unwrap().fields.insert(field.into(), value);
 
             let error = crate::dialogs::confirm(&mut app, id).unwrap_err();
@@ -195,7 +181,7 @@ mod tests {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
         let id = open(
             &mut app,
-            Pending { name: "private.pdf".into(), path: Some("/private/private.pdf".into()), source: Source::Path("/private/private.pdf".into()) },
+            Pending { name: "private.pdf".into(), path: Some("/private/private.pdf".into()), source: OpenSource::Path("/private/private.pdf".into()) },
         );
         app.automation_input = true;
         app.services.automation_command = Some(Box::new(|command, _| if command == "file.openAs" { Err("ambient PDF read denied".into()) } else { Ok(()) }));

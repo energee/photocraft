@@ -79,7 +79,7 @@ pub(crate) fn is_pdf(bytes: &[u8]) -> bool {
 pub(crate) fn import(name: &str, bytes: &[u8], options: &ImportOptions, ctl: &Interrupt) -> Result<ImportResult, IoError> {
     match options.pdf.mode {
         PdfImportMode::Render => crate::pdf_render::import(name, bytes, &options.pdf, ctl),
-        PdfImportMode::Layers => import_layers(name, bytes, options.pdf.page, ctl),
+        PdfImportMode::Layers => layered_result(name, bytes, options.pdf.page, ctl).map_err(LayeredPdfError::into_io),
         PdfImportMode::Auto => match layered_result(name, bytes, options.pdf.page, ctl) {
             Ok(result) => Ok(result),
             Err(LayeredPdfError::Absent) => crate::pdf_render::import(name, bytes, &options.pdf, ctl),
@@ -91,10 +91,6 @@ pub(crate) fn import(name: &str, bytes: &[u8], options: &ImportOptions, ctl: &In
 /// Imports the selected Photoshop-preserved PDF page.  The dispatcher chooses
 /// the ordinary renderer when this reports [`LayeredPdfError::Absent`] in Auto
 /// mode; malformed preserved data is deliberately not flattened silently.
-fn import_layers(name: &str, bytes: &[u8], page: u32, ctl: &Interrupt) -> Result<ImportResult, IoError> {
-    layered_result(name, bytes, page, ctl).map_err(LayeredPdfError::into_io)
-}
-
 fn layered_result(name: &str, bytes: &[u8], page: u32, ctl: &Interrupt) -> Result<ImportResult, LayeredPdfError> {
     ctl.check().map_err(|_| LayeredPdfError::Cancelled)?;
     layered_file(bytes, page, ctl).map(|(mut document, warnings)| {
@@ -136,10 +132,7 @@ fn layered_file(bytes: &[u8], page: u32, ctl: &Interrupt) -> Result<(photocraft_
         && let Ok(color) = composite.dict.get_deref(b"ColorSpace", &pdf).and_then(Object::as_array)
         && color.first().and_then(|object| object.as_name().ok()) == Some(b"ICCBased".as_slice())
     {
-        let profile = color.get(1).ok_or_else(|| LayeredPdfError::corrupt("ICCBased CompositeImage has no profile"))?;
-        let (_, profile) = pdf.dereference(profile).map_err(|error| LayeredPdfError::corrupt(error.to_string()))?;
-        let profile = profile.as_stream().map_err(|error| LayeredPdfError::corrupt(error.to_string()))?;
-        let data = decode_private_stream(profile, "CompositeImage ICC profile")?;
+        let data = decode_private_stream(icc_profile(&pdf, color)?, "CompositeImage ICC profile")?;
         resources.push(photocraft_psd::ImageResource::new(photocraft_psd::resources::ids::ICC_PROFILE, data));
     }
     let file = layers.into_psd(header, resources, ImageData::new(Compression::Raw, Vec::new()));
@@ -153,12 +146,6 @@ fn layered_file(bytes: &[u8], page: u32, ctl: &Interrupt) -> Result<(photocraft_
     crate::text_import::prepare(&mut document, txt2.as_ref());
     warnings.extend(psd_warnings);
     Ok((document, warnings))
-}
-
-/// Parses a PDF after [`load_page`] has applied the source-size and page
-/// selection invariants.
-fn load_pdf(bytes: &[u8]) -> Result<Document, LayeredPdfError> {
-    Document::load_mem(bytes).map_err(|error| LayeredPdfError::pdf(format!("could not parse PDF: {error}")))
 }
 
 /// Validates the input size without inspecting the bytes, keeping the hard
@@ -178,7 +165,7 @@ fn load_page(bytes: &[u8], page: u32) -> Result<(Document, lopdf::ObjectId), Lay
     if page == 0 {
         return Err(LayeredPdfError::pdf("PDF page numbers start at 1"));
     }
-    let pdf = load_pdf(bytes)?;
+    let pdf = Document::load_mem(bytes).map_err(|error| LayeredPdfError::pdf(format!("could not parse PDF: {error}")))?;
     let pages = pdf.get_pages();
     let page = pages.get(&page).copied().ok_or_else(|| LayeredPdfError::pdf(format!("PDF has {} page(s); page {page} was requested", pages.len())))?;
     Ok((pdf, page))
@@ -244,21 +231,14 @@ fn decode_private_stream(stream: &Stream, label: &str) -> Result<Vec<u8>, Layere
         return Err(LayeredPdfError::pdf(format!("{label} compressed data exceeds the {} MiB import limit", MAX_PRIVATE_BYTES >> 20)));
     }
     if stream.dict.get(b"Filter").is_err() {
-        return bounded_copy(&stream.content, label);
+        return Ok(stream.content.clone());
     }
     let filters = stream.filters().map_err(|error| LayeredPdfError::corrupt(format!("could not inspect {label} filters: {error}")))?;
     match filters.as_slice() {
-        [] => bounded_copy(&stream.content, label),
+        [] => Ok(stream.content.clone()),
         [filter] if *filter == b"FlateDecode" || *filter == b"Fl" => inflate_bounded(&stream.content, label),
         _ => Err(LayeredPdfError::corrupt(format!("{label} uses unsupported PDF stream filters"))),
     }
-}
-
-fn bounded_copy(data: &[u8], label: &str) -> Result<Vec<u8>, LayeredPdfError> {
-    if data.len() > MAX_PRIVATE_BYTES {
-        return Err(LayeredPdfError::pdf(format!("{label} exceeds the {} MiB import limit", MAX_PRIVATE_BYTES >> 20)));
-    }
-    Ok(data.to_vec())
 }
 
 /// Inflates at most one byte beyond the private-data limit, so reaching the
@@ -321,15 +301,19 @@ fn color_channels(pdf: &Document, composite: &Stream) -> Result<u16, LayeredPdfE
     if array.first().and_then(|object| object.as_name().ok()) != Some(b"ICCBased".as_slice()) {
         return Err(LayeredPdfError::corrupt("CompositeImage uses an unsupported colour space"));
     }
-    let profile = array.get(1).ok_or_else(|| LayeredPdfError::corrupt("ICCBased CompositeImage has no profile"))?;
-    let (_, profile) = pdf.dereference(profile).map_err(|error| LayeredPdfError::corrupt(format!("could not read CompositeImage ICC profile: {error}")))?;
-    let profile = profile.as_stream().map_err(|error| LayeredPdfError::corrupt(format!("CompositeImage ICC profile is not a stream: {error}")))?;
-    let count = profile
+    let count = icc_profile(pdf, array)?
         .dict
         .get(b"N")
         .and_then(Object::as_i64)
         .map_err(|error| LayeredPdfError::corrupt(format!("CompositeImage ICC profile channel count is invalid: {error}")))?;
     u16::try_from(count).map_err(|_| LayeredPdfError::corrupt("CompositeImage ICC profile channel count is out of range"))
+}
+
+/// The profile stream of an `[/ICCBased <stream>]` CompositeImage colour space.
+fn icc_profile<'a>(pdf: &'a Document, color: &'a [Object]) -> Result<&'a Stream, LayeredPdfError> {
+    let profile = color.get(1).ok_or_else(|| LayeredPdfError::corrupt("ICCBased CompositeImage has no profile"))?;
+    let (_, profile) = pdf.dereference(profile).map_err(|error| LayeredPdfError::corrupt(format!("could not read CompositeImage ICC profile: {error}")))?;
+    profile.as_stream().map_err(|error| LayeredPdfError::corrupt(format!("CompositeImage ICC profile is not a stream: {error}")))
 }
 
 #[cfg(test)]

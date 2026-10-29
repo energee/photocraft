@@ -152,7 +152,7 @@ impl PhotocraftApp {
                 crate::pdf_import::Pending {
                     name: display_name(path),
                     path: Some(path.to_string()),
-                    source: crate::pdf_import::Source::Path(path.to_string()),
+                    source: photocraft_engine::jobs::OpenSource::Path(path.to_string()),
                 },
             );
             return Ok(Vec::new());

@@ -107,7 +107,7 @@ fn validate_options(bytes: &[u8], options: &PdfImportOptions) -> Result<(), IoEr
 
 /// Derive the rotated page canvas and source transform, rejecting oversized pixel allocations.
 fn render_geometry(page: &hayro::hayro_syntax::page::Page<'_>, options: &PdfImportOptions) -> Result<(u16, u16, Affine), IoError> {
-    let (page_width, page_height) = box_dimensions(page.intersected_crop_box(), "page box")?;
+    let (page_width, page_height) = box_dimensions(page.intersected_crop_box())?;
     let (page_width, page_height) = match page.rotation() {
         Rotation::Horizontal | Rotation::FlippedHorizontal => (page_height, page_width),
         Rotation::None | Rotation::Flipped => (page_width, page_height),
@@ -137,14 +137,12 @@ fn scaled_dimension(points: f64, dpi: f64, axis: &str) -> Result<u16, IoError> {
     Ok(pixels as u16)
 }
 
-/// Prepare an owned parser buffer; MediaBox rewrites only the selected page in a transient PDF.
-/// Hayro otherwise clips drawing to CropBox even when a larger destination is allocated.
+/// Prepare an owned parser buffer. Hayro always clips to CropBox, so Media Box overrides only the
+/// chosen page's CropBox in a transient PDF to reveal content outside the original crop.
 fn page_data(bytes: &[u8], options: &PdfImportOptions) -> Result<Vec<u8>, IoError> {
     if options.crop_box == PdfBox::Crop {
         return Ok(bytes.to_vec());
     }
-    // Hayro always clips to CropBox. Override only the chosen page's box in a transient
-    // PDF so Media Box actually reveals content outside the original crop, not white padding.
     let error = |error: lopdf::Error| IoError::Pdf(format!("could not select Media Box: {error}"));
     let mut pdf = lopdf::Document::load_mem(bytes).map_err(error)?;
     let page = pdf.get_pages().get(&options.page).copied().ok_or_else(|| IoError::Pdf(format!("PDF page {} does not exist", options.page)))?;
@@ -168,18 +166,11 @@ fn inherited_media_box(pdf: &lopdf::Document, mut page: lopdf::ObjectId) -> Resu
 }
 
 /// Validate finite positive page geometry before pixel arithmetic or renderer transforms.
-fn box_dimensions(box_: hayro::hayro_syntax::object::Rect, label: &str) -> Result<(f64, f64), IoError> {
+fn box_dimensions(box_: hayro::hayro_syntax::object::Rect) -> Result<(f64, f64), IoError> {
+    // ponytail: width = x1 - x0 is finite only when both corners are, so this also rejects NaN/inf corners.
     let (width, height) = (box_.width(), box_.height());
-    if !box_.x0.is_finite()
-        || !box_.y0.is_finite()
-        || !box_.x1.is_finite()
-        || !box_.y1.is_finite()
-        || !width.is_finite()
-        || !height.is_finite()
-        || width <= 0.0
-        || height <= 0.0
-    {
-        return Err(IoError::Pdf(format!("PDF {label} must have finite, positive dimensions")));
+    if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0) {
+        return Err(IoError::Pdf("PDF page box must have finite, positive dimensions".into()));
     }
     Ok((width, height))
 }

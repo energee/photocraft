@@ -64,7 +64,7 @@ impl PhotocraftApp {
                 crate::pdf_import::Pending {
                     name: name.to_string(),
                     path: path.map(str::to_string),
-                    source: crate::pdf_import::Source::Bytes(std::sync::Arc::new(bytes.to_vec())),
+                    source: photocraft_engine::jobs::OpenSource::Bytes(std::sync::Arc::new(bytes.to_vec())),
                 },
             );
             return Ok(Vec::new());
