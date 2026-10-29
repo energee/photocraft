@@ -14,7 +14,7 @@ use photocraft_psd::tiff::{ImageSourceData, SIGNATURE, resources_from_bytes};
 use photocraft_psd::{ColorMode, Compression, Header, ImageData};
 use photocraft_raster::Interrupt;
 
-use crate::psd_import::{check_group_depth, psd_to_document_with};
+use crate::psd_import::{check_group_depth, psd_to_document_decoded_integrity};
 use crate::{ImportOptions, ImportResult, IoError, PdfImportMode};
 
 /// Largest private Photoshop stream accepted from a PDF.  This cap includes
@@ -146,7 +146,10 @@ fn layered_file(bytes: &[u8], page: u32, ctl: &Interrupt) -> Result<(photocraft_
     check_group_depth(&file).map_err(|error| LayeredPdfError::corrupt(error.to_string()))?;
     ctl.check().map_err(|_| LayeredPdfError::Cancelled)?;
     let txt2 = file.global_blocks.iter().find(|block| &block.key == b"Txt2").and_then(|block| photocraft_text::psd::parse_txt2(&block.data));
-    let (mut document, psd_warnings) = psd_to_document_with(&file, ctl).ok_or(LayeredPdfError::Cancelled)?;
+    let (mut document, psd_warnings, psd_damaged) = psd_to_document_decoded_integrity(&file, ctl, None).ok_or(LayeredPdfError::Cancelled)?;
+    if psd_damaged {
+        return Err(LayeredPdfError::corrupt("one or more editable layer channels could not be decoded"));
+    }
     crate::text_import::prepare(&mut document, txt2.as_ref());
     warnings.extend(psd_warnings);
     Ok((document, warnings))
@@ -453,6 +456,31 @@ mod tests {
         assert_eq!(imported.document.depth, SampleType::U16);
         assert_eq!(imported.document.layers.iter().map(|layer| layer.name.as_str()).collect::<Vec<_>>(), ["16-bit layer"]);
         assert_eq!(imported.document.layers[0].surface().unwrap().to_interleaved(canvas), expected);
+    }
+
+    #[test]
+    fn damaged_layer_channel_rejects_editable_pdf_imports_but_rendering_succeeds() {
+        let mut original = Document::new("source", Size::new(3, 2), ColorMode::Rgb, SampleType::U8);
+        original.layers.push(Layer::raster("Layer", original.pixel_format()));
+        original.layers[0].surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 0, 3, 2), &[1.0, 0.0, 0.0, 1.0]);
+        let mut psd = crate::document_to_psd(&original);
+        psd.layers_mut()[0].channels[0].data.clear();
+        let (source, _) = ImageSourceData::from_psd(&psd).to_bytes(ByteOrder::Big).unwrap();
+        assert!(ImageSourceData::from_bytes(&source).is_ok());
+        let pdf = photoshop_pdf(&source[SIGNATURE.len()..]);
+
+        let error = layered_result("damaged-channel.pdf", &pdf, 1, &Interrupt::NONE).unwrap_err();
+        assert!(matches!(error, LayeredPdfError::Corrupt(_)), "{error:?}");
+
+        for mode in [PdfImportMode::Auto, PdfImportMode::Layers] {
+            let options = ImportOptions { pdf: crate::PdfImportOptions { mode, ..Default::default() }, ..Default::default() };
+            assert!(matches!(crate::import_with_options("damaged-channel.pdf", &pdf, &options), Err(IoError::Pdf(_))));
+        }
+
+        let options = ImportOptions { pdf: crate::PdfImportOptions { mode: PdfImportMode::Render, dpi: 72.0, ..Default::default() }, ..Default::default() };
+        let rendered = crate::import_with_options("damaged-channel.pdf", &pdf, &options).unwrap();
+        assert_eq!(rendered.document.size, Size::new(3, 2));
+        assert_eq!(rendered.document.layers[0].surface().unwrap().pixel(0, 0), [1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]

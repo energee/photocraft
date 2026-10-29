@@ -126,3 +126,104 @@ fn pdf_smart_refresh_edit_and_native_reopen_retain_the_selection() {
         assert!(updated.pdf_import.is_none(), "native replacement no longer has a PDF page selection");
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn shared_pdf_contents_keep_each_instances_selection_through_replace_and_relink() {
+    let directory = tempfile::tempdir().unwrap();
+    let linked = directory.path().join("replacement.pdf");
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 24})).unwrap();
+    let id = place_pdf(&mut s, pages("0 1 0"), None);
+    let sibling = LayerId(s.execute("layer.duplicate", json!({"layer": id.0})).unwrap()["layer"].as_u64().unwrap());
+    let sibling_selection = PdfImportOptions { mode: PdfImportMode::Render, page: 1, dpi: 72.0, crop_box: PdfBox::Crop };
+    s.edit("Select sibling PDF page", |doc, _| {
+        let LayerContent::Smart(sm) = &mut doc.layer_mut(sibling).unwrap().content else { panic!("expected smart object") };
+        sm.pdf_import = Some(sibling_selection);
+        Ok(())
+    })
+    .unwrap();
+
+    crate::smart_cmds::replace_contents_bytes(&mut s, id, "replacement.pdf", pages("1 0 1")).unwrap();
+    let doc = &s.active().unwrap().doc;
+    assert_eq!(smart(doc, id).pdf_import, Some(selected()));
+    assert_eq!(smart(doc, sibling).pdf_import, Some(sibling_selection));
+    assert_color(&crate::smart_cmds::render(doc, smart(doc, id)).unwrap().unwrap(), [1.0, 0.0, 1.0]);
+    let sibling_image = crate::smart_cmds::render(doc, smart(doc, sibling)).unwrap().unwrap();
+    assert_eq!(sibling_image.content_bounds(), Rect::new(0, 0, 4, 4));
+    assert_color(&sibling_image, [1.0, 0.0, 0.0]);
+
+    std::fs::write(&linked, pages("0 1 1")).unwrap();
+    s.execute("layer.smartObjects.relinkToFile", json!({"layer": id.0, "path": linked.to_string_lossy()})).unwrap();
+    let doc = &s.active().unwrap().doc;
+    assert_eq!(smart(doc, id).pdf_import, Some(selected()));
+    assert_eq!(smart(doc, sibling).pdf_import, Some(sibling_selection));
+    assert_color(&crate::smart_cmds::render(doc, smart(doc, id)).unwrap().unwrap(), [0.0, 1.0, 1.0]);
+    assert_color(&crate::smart_cmds::render(doc, smart(doc, sibling)).unwrap().unwrap(), [1.0, 0.0, 0.0]);
+
+    crate::smart_cmds::replace_contents_bytes(&mut s, id, "plain.svg", br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4"/>"##.to_vec())
+        .unwrap();
+    let doc = &s.active().unwrap().doc;
+    assert!(smart(doc, id).pdf_import.is_none());
+    assert!(smart(doc, sibling).pdf_import.is_none());
+}
+
+#[test]
+fn replacing_shared_pdf_contents_rolls_back_when_a_sibling_page_is_invalid() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 24})).unwrap();
+    let id = place_pdf(&mut s, pages("0 1 0"), None);
+    let sibling = LayerId(s.execute("layer.duplicate", json!({"layer": id.0})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("Select unavailable sibling PDF page", |doc, _| {
+        let LayerContent::Smart(sm) = &mut doc.layer_mut(sibling).unwrap().content else { panic!("expected smart object") };
+        sm.pdf_import = Some(PdfImportOptions { page: 3, ..selected() });
+        Ok(())
+    })
+    .unwrap();
+    let before = smart(&s.active().unwrap().doc, id).source.clone();
+
+    assert!(crate::smart_cmds::replace_contents_bytes(&mut s, id, "replacement.pdf", pages("1 0 1")).is_err());
+
+    let doc = &s.active().unwrap().doc;
+    assert_eq!(smart(doc, id).source, before);
+    assert_eq!(smart(doc, id).pdf_import, Some(selected()));
+    assert_eq!(smart(doc, sibling).pdf_import, Some(PdfImportOptions { page: 3, ..selected() }));
+}
+
+#[test]
+fn editing_one_shared_pdf_projection_keeps_other_projections_open_and_pdf() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 24})).unwrap();
+    let id = place_pdf(&mut s, pages("0 1 0"), None);
+    let sibling = LayerId(s.execute("layer.duplicate", json!({"layer": id.0})).unwrap()["layer"].as_u64().unwrap());
+    let sibling_selection = PdfImportOptions { mode: PdfImportMode::Render, page: 1, dpi: 72.0, crop_box: PdfBox::Crop };
+    s.edit("Select sibling PDF page", |doc, _| {
+        let LayerContent::Smart(sm) = &mut doc.layer_mut(sibling).unwrap().content else { panic!("expected smart object") };
+        sm.pdf_import = Some(sibling_selection);
+        Ok(())
+    })
+    .unwrap();
+
+    let page_two_child = s.execute("layer.smartObjects.editContents", json!({"layer": id.0})).unwrap()["document"].as_u64().unwrap() as usize;
+    assert_eq!(s.active().unwrap().doc.size, photocraft_geom::Size::new(16, 8));
+    s.set_active(0);
+    let page_one_child = s.execute("layer.smartObjects.editContents", json!({"layer": sibling.0})).unwrap()["document"].as_u64().unwrap() as usize;
+    assert_ne!(page_two_child, page_one_child);
+    assert_eq!(s.active().unwrap().doc.size, photocraft_geom::Size::new(4, 4));
+
+    s.set_active(page_two_child);
+    s.execute("image.imageRotation.90cw", json!({})).unwrap();
+    assert!(crate::smart_cmds::commit_child(&mut s, page_two_child).unwrap());
+
+    s.set_active(0);
+    let doc = &s.active().unwrap().doc;
+    assert!(matches!(smart(doc, id).source, SmartSource::Embedded { ref file_name, .. } if file_name.ends_with(".pcraft")));
+    assert!(smart(doc, id).pdf_import.is_none());
+    assert!(matches!(smart(doc, sibling).source, SmartSource::Embedded { ref file_name, .. } if file_name.ends_with(".pdf")));
+    assert_eq!(smart(doc, sibling).pdf_import, Some(sibling_selection));
+    assert_color(&crate::smart_cmds::render(doc, smart(doc, sibling)).unwrap().unwrap(), [1.0, 0.0, 0.0]);
+
+    assert_eq!(s.execute("layer.smartObjects.editContents", json!({"layer": id.0})).unwrap()["document"].as_u64(), Some(page_two_child as u64));
+    s.set_active(0);
+    assert_eq!(s.execute("layer.smartObjects.editContents", json!({"layer": sibling.0})).unwrap()["document"].as_u64(), Some(page_one_child as u64));
+}

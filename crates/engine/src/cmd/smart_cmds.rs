@@ -39,12 +39,14 @@ use crate::jobs::JobCtx;
 use crate::{EngineError, Result, Session};
 
 /// An open Edit Contents document and the shared contents it updates when saved or closed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SmartLink {
     pub child: DocId,
     pub parent: DocId,
     pub layer: LayerId,
     pub contents_id: SmartContentsId,
+    /// The effective PDF projection open in `child`; legacy `None` is the default projection.
+    pub pdf_import: photocraft_doc::PdfImportOptions,
 }
 
 /// PSD placed-layer keys that describe the smart object's source; stale once we change it.

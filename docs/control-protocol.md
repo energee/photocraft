@@ -126,6 +126,11 @@ as a PSB rather than relying on a PDF consumer to choose the same page. Replacin
 contents with a native bundle clears the now-inapplicable PDF selection.
 Invalid pages, unreadable PDFs and size-limit errors are terminal, distinct from corrupt
 Photoshop editing data; Auto does not retry them as raster imports.
+Layer-channel decode damage is also terminal: a parseable private record must not produce
+an incomplete editable document. Explicit Render may still open the page appearance.
+Instances sharing a source file retain their own PDF selections on Replace Contents/Relink.
+Different projections use separate Edit Contents documents; saving one projection converts
+only its matching instances to native contents, leaving other pages and their editors intact.
 
 ## Engine commands
 

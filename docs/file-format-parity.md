@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-28 · **Last updated:** 2026-10-28 · **Change:** minor (persistent PDF smart-object selections, same-file batch protection and explicit import errors; percentages and estimates unchanged) · **Target:** Adobe Photoshop 2026
+> **Last reviewed:** 2026-10-28 · **Last updated:** 2026-10-28 · **Change:** minor (PDF channel-integrity checks and per-projection smart-object editing; percentages and estimates unchanged) · **Target:** Adobe Photoshop 2026
 
 **PSD Filter Gallery (#8940, 2026-10-23):** Halftone Pattern maps its size, contrast and dot/circle/line pattern as editable settings on import and export, with the reference application's descriptor keys (`HlSz`, `Cntr`, `ScrT`: `ScrD`/`ScrC`/`ScrL`). PSD/PSB round trips pass at 8/16/32 bits. This does not claim pixel equivalence for the existing renderer. Unknown or malformed settings remain verbatim on import.
 
@@ -161,6 +161,7 @@ remaining gaps in #1606 stay tracked with per-sample corpus ceilings.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-28 | minor | PDF integrity follow-up (#10034): damaged decoded layer channels are rejected instead of admitting incomplete editable data; shared PDF instances retain separate selections on source replacement and separate Edit Contents/native commit families. |
 | 2026-10-28 | minor | PDF review corrections (#10034): selected page/mode/ppi/box retained through embedded/linked smart-object regeneration and native saves; selected contents embedded as PSB on PSD export; same-file CLI batch PDF overwrite refused; parser/page/size errors no longer imply corrupt Photoshop layers. |
 | 2026-10-28 | minor | Photoshop PDF editing blocks import as layers with their ICC profile; ordinary pages rasterize with page/ppi/CropBox/MediaBox options. Real CMYK/16 label opened and survived native save/reopen; source Save protection added. FILE-215-10 remains partial; percentages unchanged. |
 | 2026-10-24 | minor | Layered TIFF: the `LMsk` block in tag 37724 carries Photoshop's default global layer mask (14 bytes) instead of none; with an empty block Photoshop read only the composite (#9095). PSD output unchanged |
